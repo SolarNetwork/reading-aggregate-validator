@@ -1,0 +1,13 @@
+.DS_Store
+.gradle
+.vscode
+*.log
+*.orig
+*.swp
+test.jpage
+bin/
+build/
+target/
+junit*.properties
+/*.yml
+
