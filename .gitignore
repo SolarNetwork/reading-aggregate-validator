@@ -1,5 +1,8 @@
 .DS_Store
+.classpath
 .gradle
+.project
+.settings
 .vscode
 *.log
 *.orig
