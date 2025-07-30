@@ -11,6 +11,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -35,6 +36,7 @@ import net.solarnetwork.domain.datum.ObjectDatumStreamDataSet;
 import net.solarnetwork.domain.datum.ObjectDatumStreamMetadata;
 import net.solarnetwork.domain.datum.StreamDatum;
 import s10k.tool.domain.DatumStreamTimeRange;
+import s10k.tool.domain.LocalDateTimeRange;
 import s10k.tool.domain.NodeAndSource;
 
 /**
@@ -142,7 +144,7 @@ public final class RestUtils {
 			endDate = maxDate.atZone(zone).toLocalDateTime().truncatedTo(DAYS);
 		}
 
-		return new DatumStreamTimeRange(nodeAndSource, zone, startDate, endDate);
+		return new DatumStreamTimeRange(nodeAndSource, zone, new LocalDateTimeRange(startDate, endDate));
 	}
 
 	private static final ParameterizedTypeReference<ObjectDatumStreamDataSet<StreamDatum>> STREAM_DATUM_SET_TYPEREF = new ParameterizedTypeReference<ObjectDatumStreamDataSet<StreamDatum>>() {
@@ -227,10 +229,12 @@ public final class RestUtils {
 					.queryParam("localEndDate", endDate)
 					.queryParam("readingType", "Difference")
 					.queryParam("aggregation", aggregation)
-					.queryParam("rollupType", "All")
 					;
-				if (partialAggregation != null ) {
-					b.queryParam("partialAggregation", partialAggregation);
+				if (ChronoUnit.HOURS.between(startDate, endDate) > 1) {
+					b.queryParam("rollupType", "All");
+					if (partialAggregation != null ) {
+						b.queryParam("partialAggregation", partialAggregation);
+					}
 				}
 				return b.build();
 			})

@@ -11,26 +11,41 @@ import net.solarnetwork.domain.datum.Datum;
 /**
  * Validation information.
  */
-public record DatumStreamValidationInfo(Datum expected, Datum actual, String[] propertyNames) {
+public record DatumStreamValidationInfo(Datum expected, Datum actual) {
 
 	/**
 	 * Compute a map of property differences.
 	 * 
+	 * <p>
+	 * Note that {@code null} values are treated like {@code 0}.
+	 * </p>
+	 * 
+	 * @param accumulatingProperties the accumulating properties to extract
 	 * @return the differences, or an empty map if there are none
 	 */
-	public Map<String, PropertyValueComparison> differences() {
+	public Map<String, PropertyValueComparison> differences(String[] accumulatingProperties) {
 		Map<String, PropertyValueComparison> result = null;
-		for (String propertyName : propertyNames) {
-			BigDecimal expectedVal = expected.asSampleOperations().getSampleBigDecimal(Accumulating, propertyName);
-			BigDecimal actualVal = actual.asSampleOperations().getSampleBigDecimal(Accumulating, propertyName);
+		for (String propertyName : accumulatingProperties) {
+			BigDecimal expectedVal = (expected != null
+					? expected.asSampleOperations().getSampleBigDecimal(Accumulating, propertyName)
+					: null);
+			BigDecimal actualVal = (actual != null
+					? actual.asSampleOperations().getSampleBigDecimal(Accumulating, propertyName)
+					: null);
 			if (expectedVal == null && actualVal == null) {
 				continue;
 			}
-			if (expectedVal != null && actualVal != null && expectedVal.compareTo(actualVal) == 0) {
+			if (expectedVal == null) {
+				expectedVal = BigDecimal.ZERO;
+			}
+			if (actualVal == null) {
+				actualVal = BigDecimal.ZERO;
+			}
+			if (expectedVal.compareTo(actualVal) == 0) {
 				continue;
 			}
 			if (result == null) {
-				result = new LinkedHashMap<>(propertyNames.length);
+				result = new LinkedHashMap<>(accumulatingProperties.length);
 			}
 			result.put(propertyName, new PropertyValueComparison(expectedVal, actualVal));
 		}
