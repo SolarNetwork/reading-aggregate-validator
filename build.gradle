@@ -10,15 +10,18 @@ plugins {
     id 'eclipse'
     id 'org.springframework.boot' version '3.5.4'
 	id 'net.ltgt.errorprone' version '4.3.0'
+	id 'org.graalvm.buildtools.native' version '0.11.0'
 }
 
 apply plugin: 'java'
 apply plugin: 'org.springframework.boot'
 apply plugin: 'io.spring.dependency-management'
 apply plugin: 'net.ltgt.errorprone'
+apply plugin: 'org.graalvm.buildtools.native'
 
 description = 'SolarNetwork Reading Aggregate Validator'
 version = '1.0.0'
+group = 's10k.tool'
 
 base {
 	archivesName = 'sn-reading-aggregate-validator'
@@ -63,6 +66,7 @@ java {
 	
 compileJava {
 	it.options.errorprone.enabled = !(rootProject.hasProperty('errorProneDisabled') && rootProject.errorProneDisabled.toBoolean());
+	it.options.compilerArgs += ["-Aproject=${project.group}/${project.name}"]
 }
 
 compileTestJava {
@@ -86,6 +90,7 @@ jar.manifest {
 ext {
 	bucket4jVersion = '8.14.0'
 	commonsIoVersion = '2.20.0'
+	picoCliVersion = '4.7.7'
 	snCommonVersion = '4.0.0'
 	snCommonPkiBcVersion = '4.0.0'
 	snCommonWebJakartaVersion = '2.0.6'
@@ -100,9 +105,17 @@ ext {
 }
 
 dependencies {
+	implementation "info.picocli:picocli-spring-boot-starter:${picoCliVersion}"
+	implementation 'org.springframework.boot:spring-boot-starter'
+	
 	testImplementation libraries.mockito,
 			libraries.mockitoJupiter,
+			'org.junit.jupiter:junit-jupiter-api',
+			'org.junit.jupiter:junit-jupiter',
 			'org.junit.platform:junit-platform-launcher'
+	testImplementation 'org.springframework.boot:spring-boot-starter-test'
+	
+	annotationProcessor "info.picocli:picocli-codegen:${picoCliVersion}"
 	
 	errorprone 'com.google.errorprone:error_prone_core:2.41.0'
 }
