@@ -1,22 +1,23 @@
 package s10k.tool.validation;
 
+import static java.time.temporal.ChronoUnit.DAYS;
 import static java.util.Arrays.stream;
 import static java.util.stream.Collectors.joining;
+import static net.solarnetwork.util.DateUtils.ISO_DATE_OPT_TIME_ALT_LOCAL;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
-import org.springframework.http.MediaType;
 import org.springframework.http.client.BufferingClientHttpRequestFactory;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
@@ -24,8 +25,9 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.client.RestTemplate;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
+import net.solarnetwork.domain.datum.Aggregation;
 import net.solarnetwork.domain.datum.Datum;
 import net.solarnetwork.security.Snws2AuthorizationBuilder;
 import net.solarnetwork.web.jakarta.support.AuthorizationV2RequestInterceptor;
@@ -34,6 +36,12 @@ import net.solarnetwork.web.jakarta.support.StaticAuthorizationCredentialsProvid
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Help.Ansi;
 import picocli.CommandLine.Option;
+import s10k.tool.domain.DatumStreamTimeRange;
+import s10k.tool.domain.DatumStreamTimeRangeValidation;
+import s10k.tool.domain.DatumStreamValidationInfo;
+import s10k.tool.domain.NodeAndSource;
+import s10k.tool.domain.PropertyValueComparison;
+import s10k.tool.support.RestUtils;
 
 /**
  * Validate SolarNetwork aggregate reading values.
@@ -81,16 +89,23 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			"--secret" }, description = "the SolarNetwork API token secret", required = true, interactive = true)
 	char[] tokenSecret;
 
+	@Option(names = { "-o",
+			"--min-days-offset" }, description = "minimum number of days offset from today to disallow validation", defaultValue = "1")
+	int minDaysOffsetFromNow = 1;
+
 	private final ClientHttpRequestFactory reqFactory;
+	private final ObjectMapper objectMapper;
 
 	/**
 	 * Constructor.
 	 * 
-	 * @param reqFactory the HTTP request factory to use
+	 * @param reqFactory   the HTTP request factory to use
+	 * @param objectMapper the mapper to use
 	 */
-	public ReadingAggregateValidator(ClientHttpRequestFactory reqFactory) {
+	public ReadingAggregateValidator(ClientHttpRequestFactory reqFactory, ObjectMapper objectMapper) {
 		super();
 		this.reqFactory = reqFactory;
+		this.objectMapper = objectMapper;
 	}
 
 	@Override
@@ -119,17 +134,19 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			RestTemplate template = new RestTemplate(new BufferingClientHttpRequestFactory(reqFactory));
 			template.setInterceptors(
 					List.of(new AuthorizationV2RequestInterceptor(credProvider), new LoggingHttpRequestInterceptor()));
+			RestUtils.setObjectMapper(template, objectMapper);
 			restClient = RestClient.builder(template).baseUrl(DEFAULT_BASE_URL).build();
 		} else {
 			RestTemplate template = new RestTemplate(reqFactory);
 			template.setInterceptors(List.of(new AuthorizationV2RequestInterceptor(credProvider)));
+			RestUtils.setObjectMapper(template, objectMapper);
 			restClient = RestClient.builder(template).baseUrl(DEFAULT_BASE_URL).build();
 		}
 
 		// get listing matching nodes + sources
 		final List<NodeAndSource> streams;
 		try {
-			streams = nodesAndSources(restClient);
+			streams = RestUtils.nodesAndSources(restClient, nodeIds, sourceIds, properties);
 		} catch (RestClientResponseException e) {
 			// @formatter:off
 			System.out.print(Ansi.AUTO.string("""
@@ -147,14 +164,12 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			return 1;
 		}
 
-		List<Future<Collection<InvalidStreamRange>>> taskResults = new ArrayList<>();
+		List<Future<Collection<DatumStreamTimeRangeValidation>>> taskResults = new ArrayList<>();
 
 		try (ExecutorService threadPool = (threadCount > 1 ? Executors.newFixedThreadPool(threadCount)
 				: Executors.newSingleThreadExecutor())) {
-			for (Long nodeId : nodeIds) {
-				for (String sourceId : sourceIds) {
-					taskResults.add(threadPool.submit(new StreamValidator(nodeId, sourceId)));
-				}
+			for (NodeAndSource nodeAndSource : streams) {
+				taskResults.add(threadPool.submit(new StreamValidator(restClient, nodeAndSource)));
 			}
 			threadPool.shutdown();
 			boolean finished = threadPool.awaitTermination(maxWait.toSeconds(), TimeUnit.SECONDS);
@@ -167,72 +182,72 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 		return 0;
 	}
 
-	private List<NodeAndSource> nodesAndSources(RestClient restClient) {
-		// @formatter:off
-		JsonNode nodesAndSources = restClient.get()
-			.uri(b -> {
-				b.path("/solarquery/api/v1/sec/nodes/sources");
-				b.queryParam("nodeIds", stream(nodeIds).map(Object::toString).collect(joining(",")));
-				b.queryParam("sourceIds", stream(sourceIds).collect(joining(",")));
-				b.queryParam("accumulatingPropertyNames", stream(properties).collect(joining(",")));
-				return b.build();
-			})
-			.accept(MediaType.APPLICATION_JSON)
-			.retrieve()
-			.body(JsonNode.class)
-			;		
-		// @formatter:on
-		List<NodeAndSource> results = new ArrayList<>();
-		for (JsonNode tuple : nodesAndSources.findPath("data")) {
-			var nodeSource = new NodeAndSource(tuple.path("nodeId").longValue(), tuple.path("sourceId").textValue());
-			if (nodeSource.isValid()) {
-				results.add(nodeSource);
-			}
-		}
-		return results;
-	}
+	private final class StreamValidator implements Callable<Collection<DatumStreamTimeRangeValidation>> {
 
-	private record NodeAndSource(Long nodeId, String sourceId) {
+		private final RestClient restClient;
+		private final NodeAndSource nodeAndSource;
+		private final String verboseMessagePrefix;
 
-		private boolean isValid() {
-			return nodeId != null && nodeId.longValue() != 0 && sourceId != null && !sourceId.isBlank();
-		}
+		private final List<DatumStreamTimeRangeValidation> results = new ArrayList<>();
 
-	}
-
-	private final class StreamValidator implements Callable<Collection<InvalidStreamRange>> {
-		private final Long nodeId;
-		private final String sourceId;
-
-		private final List<InvalidStreamRange> results = new ArrayList<>();
-
-		private StreamValidator(Long nodeId, String sourceId) {
+		private StreamValidator(RestClient restClient, NodeAndSource nodeAndSource) {
 			super();
-			this.nodeId = nodeId;
-			this.sourceId = sourceId;
+			this.restClient = restClient;
+			this.nodeAndSource = nodeAndSource;
+			this.verboseMessagePrefix = "[@|yellow %6d|@ @|yellow %s|@]".formatted(nodeAndSource.nodeId(),
+					nodeAndSource.sourceId());
 		}
 
 		@Override
-		public Collection<InvalidStreamRange> call() throws Exception {
+		public Collection<DatumStreamTimeRangeValidation> call() throws Exception {
+			if (verbose) {
+				System.out.println(Ansi.AUTO.string(verboseMessagePrefix + " Validation starting"));
+			}
+
+			final DatumStreamTimeRange range = RestUtils.datumStreamTimeRange(restClient, nodeAndSource,
+					Instant.now().minus(minDaysOffsetFromNow, DAYS).truncatedTo(DAYS));
+			if (range == null) {
+				System.out.println(verboseMessagePrefix + " Time range not available");
+				return List.of();
+			}
 			if (verbose) {
 				// @formatter:off
 				System.out.print(Ansi.AUTO.string("""
-						Validation complete for node @|yellow %d|@ source [@|yellow %s|@]: @|%s %d|@ problems found.
-						""".formatted(nodeId, sourceId, results.isEmpty() ? "green" : "red", results.size())
+						%s Stream range discovered: %s - %s (%s; %d days)
+						""".formatted(
+								  verboseMessagePrefix
+								, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.startDate())
+								, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.endDate())
+								, range.zone().getId()
+								, DAYS.between(range.startDate(), range.endDate())
+							)
+						));
+				// @formatter:on
+			}
+
+			final Datum expected = RestUtils.readingDifference(restClient, nodeAndSource, range.startDate(),
+					range.endDate(), properties);
+			final Datum rollup = RestUtils.readingDifferenceRollup(restClient, nodeAndSource, range.startDate(),
+					range.endDate(), properties, Aggregation.Month, Aggregation.Day);
+
+			final DatumStreamValidationInfo info = new DatumStreamValidationInfo(expected, rollup, properties);
+			final Map<String, PropertyValueComparison> differences = info.differences();
+			results.add(new DatumStreamTimeRangeValidation(range, info, differences));
+
+			if (verbose) {
+				// @formatter:off
+				System.out.print(Ansi.AUTO.string("""
+						%s Validation complete: @|%s %d|@ problems found
+						""".formatted(
+								  verboseMessagePrefix
+								, results.isEmpty() ? "green" : "red"
+								, results.size()
+							)
 						));
 				// @formatter:on
 			}
 			return results;
 		}
-
-	}
-
-	private record ValidationInfo(Datum expected, Datum actual) {
-
-	}
-
-	private record InvalidStreamRange(Long nodeId, String sourceId, LocalDateTime start, LocalDateTime end,
-			ValidationInfo info) {
 
 	}
 
