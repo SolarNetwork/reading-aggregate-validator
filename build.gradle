@@ -92,7 +92,6 @@ ext {
 	commonsIoVersion = '2.20.0'
 	picoCliVersion = '4.7.7'
 	snCommonVersion = '4.0.0'
-	snCommonPkiBcVersion = '4.0.0'
 	snCommonWebJakartaVersion = '2.0.6'
 	superCsvVersion = '2.4.0'
 	threetenExtraVersion = '1.8.0'
@@ -107,6 +106,12 @@ ext {
 dependencies {
 	implementation "info.picocli:picocli-spring-boot-starter:${picoCliVersion}"
 	implementation 'org.springframework.boot:spring-boot-starter'
+	implementation 'org.springframework.boot:spring-boot-starter-web'
+	
+	implementation "net.solarnetwork.common:net.solarnetwork.common:${snCommonVersion}"
+	implementation "net.solarnetwork.common:net.solarnetwork.common.web.jakarta:${snCommonWebJakartaVersion}"
+	implementation 'org.apache.httpcomponents.client5:httpclient5'
+	
 	
 	testImplementation libraries.mockito,
 			libraries.mockitoJupiter,
