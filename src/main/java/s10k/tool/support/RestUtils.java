@@ -7,6 +7,7 @@ import static net.solarnetwork.codec.JsonUtils.parseDateAttribute;
 import static net.solarnetwork.util.DateUtils.ISO_DATE_OPT_TIME_ALT_LOCAL;
 
 import java.math.BigDecimal;
+import java.net.URI;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -17,11 +18,15 @@ import java.util.List;
 
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.BufferingClientHttpRequestFactory;
+import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.http.converter.HttpMessageConverter;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
+import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriComponentsBuilder;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -35,6 +40,9 @@ import net.solarnetwork.domain.datum.GeneralDatum;
 import net.solarnetwork.domain.datum.ObjectDatumStreamDataSet;
 import net.solarnetwork.domain.datum.ObjectDatumStreamMetadata;
 import net.solarnetwork.domain.datum.StreamDatum;
+import net.solarnetwork.web.jakarta.security.AuthorizationCredentialsProvider;
+import net.solarnetwork.web.jakarta.support.AuthorizationV2RequestInterceptor;
+import net.solarnetwork.web.jakarta.support.LoggingHttpRequestInterceptor;
 import s10k.tool.domain.DatumStreamTimeRange;
 import s10k.tool.domain.LocalDateTimeRange;
 import s10k.tool.domain.NodeAndSource;
@@ -43,6 +51,9 @@ import s10k.tool.domain.NodeAndSource;
  * Helper utilities for REST operations.
  */
 public final class RestUtils {
+
+	/** The default base URL to the SolarNetwork API. */
+	public static final String DEFAULT_SOLARNETWORK_BASE_URL = "https://data.solarnetwork.net";
 
 	private RestUtils() {
 		// not available
@@ -60,6 +71,37 @@ public final class RestUtils {
 				c.setObjectMapper(objectMapper);
 			}
 		}
+	}
+
+	/**
+	 * Create a new {@link RestClient} instance.
+	 * 
+	 * <p>
+	 * The client will automatically add a SolarNetwork API authorization header to
+	 * each request.
+	 * </p>
+	 * 
+	 * @param reqFactory   the request factory
+	 * @param credProvider the SolarNetwork API credentials provider
+	 * @param objectMapper the object mapper
+	 * @param baseUrl      the base URL
+	 * @param traceHttp    {@code true} to enable HTTP trace logging
+	 * @return the client
+	 */
+	public static RestClient createSolarNetworkRestClient(ClientHttpRequestFactory reqFactory,
+			AuthorizationCredentialsProvider credProvider, ObjectMapper objectMapper, String baseUrl,
+			boolean traceHttp) {
+		if (traceHttp) {
+			RestTemplate template = new RestTemplate(new BufferingClientHttpRequestFactory(reqFactory));
+			template.setInterceptors(
+					List.of(new AuthorizationV2RequestInterceptor(credProvider), new LoggingHttpRequestInterceptor()));
+			RestUtils.setObjectMapper(template, objectMapper);
+			return RestClient.builder(template).baseUrl(baseUrl).build();
+		}
+		RestTemplate template = new RestTemplate(reqFactory);
+		template.setInterceptors(List.of(new AuthorizationV2RequestInterceptor(credProvider)));
+		RestUtils.setObjectMapper(template, objectMapper);
+		return RestClient.builder(template).baseUrl(baseUrl).build();
 	}
 
 	/**
@@ -244,6 +286,57 @@ public final class RestUtils {
 			;
 		// @formatter:on
 		return firstDatum(results, accumulatingProperties);
+	}
+
+	/**
+	 * Create a URL suitable for marking a datum stream time range as "stale".
+	 * 
+	 * @param nodeAndSource  the stream identity
+	 * @param staleTimeRange the time range
+	 * @return the URL
+	 */
+	public static URI markStaleUri(NodeAndSource nodeAndSource, LocalDateTimeRange staleTimeRange) {
+		// @formatter:off
+		return UriComponentsBuilder.newInstance()
+			.path("/solaruser/api/v1/sec/datum/maint/agg/stale")
+			.queryParam("nodeId", nodeAndSource.nodeId())
+			.queryParam("sourceId", nodeAndSource.sourceId())
+			.queryParam("localStartDate", staleTimeRange.start())
+			.queryParam("localEndDate", staleTimeRange.end())
+			.build()
+			.toUri()
+			;
+		// @formatter:on
+	}
+
+	/**
+	 * Mark a datum stream time range as "stale".
+	 * 
+	 * @param restClient     the REST client to use
+	 * @param nodeAndSource  the stream identity
+	 * @param staleTimeRange the time range
+	 * @return {@code true} if successful
+	 * @throws RestClientException if the request fails
+	 */
+	public static boolean markStale(RestClient restClient, NodeAndSource nodeAndSource,
+			LocalDateTimeRange staleTimeRange) {
+		var postBody = new LinkedMultiValueMap<String, Object>(4);
+		postBody.set("nodeId", nodeAndSource.nodeId());
+		postBody.set("sourceId", nodeAndSource.sourceId());
+		postBody.set("localStartDate", staleTimeRange.start().toString());
+		postBody.set("localEndDate", staleTimeRange.end().toString());
+		// @formatter:off
+		JsonNode success = restClient.post()
+			.uri("/solaruser/api/v1/sec/datum/maint/agg/stale")
+			.contentType(MediaType.APPLICATION_FORM_URLENCODED)
+			.body(postBody)
+			.accept(MediaType.APPLICATION_JSON)
+			.retrieve()
+			.body(JsonNode.class)
+			.path("success")
+			;		
+		// @formatter:on
+		return success.booleanValue();
 	}
 
 }

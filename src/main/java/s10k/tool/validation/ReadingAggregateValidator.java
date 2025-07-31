@@ -2,6 +2,7 @@ package s10k.tool.validation;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.time.temporal.ChronoUnit.DAYS;
+import static java.time.temporal.ChronoUnit.HOURS;
 import static java.util.Arrays.stream;
 import static java.util.stream.Collectors.joining;
 import static net.solarnetwork.domain.datum.Aggregation.Day;
@@ -29,13 +30,10 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
-import org.springframework.http.client.BufferingClientHttpRequestFactory;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
-import org.springframework.web.client.RestTemplate;
-import org.springframework.web.util.UriComponentsBuilder;
 import org.supercsv.io.CsvListWriter;
 import org.supercsv.io.ICsvListWriter;
 
@@ -45,8 +43,6 @@ import net.solarnetwork.domain.datum.Aggregation;
 import net.solarnetwork.domain.datum.Datum;
 import net.solarnetwork.io.NullWriter;
 import net.solarnetwork.security.Snws2AuthorizationBuilder;
-import net.solarnetwork.web.jakarta.support.AuthorizationV2RequestInterceptor;
-import net.solarnetwork.web.jakarta.support.LoggingHttpRequestInterceptor;
 import net.solarnetwork.web.jakarta.support.StaticAuthorizationCredentialsProvider;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Help.Ansi;
@@ -68,13 +64,8 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 
 	private static final long HOURS_PER_DAY = 24L;
 
-	private static final String DEFAULT_BASE_URL = "https://data.solarnetwork.net";
-
 	@Option(names = { "-v", "--verbose" }, description = "verbose output")
 	boolean verbose;
-
-	@Option(names = { "-n", "--dry-run" }, description = "do not actually submit changes to SolarNetwork")
-	boolean dryRun;
 
 	@Option(names = { "-T", "--http-trace" }, description = "trace HTTP exchanges")
 	boolean traceHttp;
@@ -124,6 +115,8 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 	private final ClientHttpRequestFactory reqFactory;
 	private final ObjectMapper objectMapper;
 
+	private volatile boolean globalStop;
+
 	/**
 	 * Constructor.
 	 * 
@@ -157,19 +150,8 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 				signingDate);
 		Arrays.fill(tokenSecret, ' ');
 
-		final RestClient restClient;
-		if (traceHttp) {
-			RestTemplate template = new RestTemplate(new BufferingClientHttpRequestFactory(reqFactory));
-			template.setInterceptors(
-					List.of(new AuthorizationV2RequestInterceptor(credProvider), new LoggingHttpRequestInterceptor()));
-			RestUtils.setObjectMapper(template, objectMapper);
-			restClient = RestClient.builder(template).baseUrl(DEFAULT_BASE_URL).build();
-		} else {
-			RestTemplate template = new RestTemplate(reqFactory);
-			template.setInterceptors(List.of(new AuthorizationV2RequestInterceptor(credProvider)));
-			RestUtils.setObjectMapper(template, objectMapper);
-			restClient = RestClient.builder(template).baseUrl(DEFAULT_BASE_URL).build();
-		}
+		final RestClient restClient = RestUtils.createSolarNetworkRestClient(reqFactory, credProvider, objectMapper,
+				RestUtils.DEFAULT_SOLARNETWORK_BASE_URL, traceHttp);
 
 		// get listing matching nodes + sources
 		final List<NodeAndSource> streams;
@@ -203,6 +185,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			boolean finished = threadPool.awaitTermination(maxWait.toSeconds(), TimeUnit.SECONDS);
 			if (!finished) {
 				System.out.println("Validation tasks did not complete within %ds.".formatted(maxWait.toSeconds()));
+				globalStop = true;
 				threadPool.shutdownNow();
 			}
 		}
@@ -225,12 +208,13 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 				if (!invalidHours.isEmpty()) {
 					// all results will be for single stream
 					final NodeAndSource streamIdent = invalidHours.getFirst().range().nodeAndSource();
+					final String streamIdentMessagePrefix = nodeAndSourceMessagePrefix(streamIdent);
 
 					// @formatter:off
 					System.out.print(Ansi.AUTO.string("""
-							%s Validation complete: @|red %d|@ problems found
+							%s @|red %d|@ validation problems found
 							""".formatted(
-									  nodeAndSourceMessagePrefix(streamIdent)
+									  streamIdentMessagePrefix
 									, invalidHours.size()
 								)
 							));
@@ -261,26 +245,46 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 					if (!staleTimeRanges.isEmpty()) {
 						// @formatter:off
 						System.out.println(Ansi.AUTO.string("""
-								%s @|red %d|@ ranges to mark stale:
+								%s @|red %d|@ ranges to mark stale
 								""".formatted(
-										  nodeAndSourceMessagePrefix(streamIdent)
+										  streamIdentMessagePrefix
 										, staleTimeRanges.size()
 									)
 								));
 						// @formatter:on
 
 						for (LocalDateTimeRange staleTimeRange : staleTimeRanges) {
-							// @formatter:off
-							URI markStaleUri = UriComponentsBuilder.fromUriString("/solaruser/api/v1/sec/datum/maint/agg/stale")
-								.queryParam("nodeId", streamIdent.nodeId())
-								.queryParam("sourceId", streamIdent.sourceId())
-								.queryParam("localStartDate", staleTimeRange.start())
-								.queryParam("localEndDate", staleTimeRange.end())
-								.build()
-								.toUri()
-								;
-							// @formatter:on
-							System.out.println(markStaleUri);
+							URI markStaleUri = RestUtils.markStaleUri(streamIdent, staleTimeRange);
+							if (markStale) {
+								boolean marked = RestUtils.markStale(restClient, streamIdent, staleTimeRange);
+								if (marked) {
+									// @formatter:off
+									System.out.print(Ansi.AUTO.string("""
+											%s Marked range %s - %s as stale (%d hours)
+											""".formatted(
+													  streamIdentMessagePrefix
+													, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.start())
+													, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.end())
+													, HOURS.between(staleTimeRange.start(), staleTimeRange.end())
+												)
+											));
+									// @formatter:on
+								} else {
+									// @formatter:off
+									System.out.print(Ansi.AUTO.string("""
+											%s @|Error|@ marking range %s - %s as stale (%d hours)
+											""".formatted(
+													  streamIdentMessagePrefix
+													, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.start())
+													, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.end())
+													, HOURS.between(staleTimeRange.start(), staleTimeRange.end())
+												)
+											));
+									// @formatter:on
+								}
+							} else {
+								System.out.println(markStaleUri);
+							}
 						}
 					}
 				}
@@ -300,7 +304,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 
 		private final RestClient restClient;
 		private final NodeAndSource nodeAndSource;
-		private final String verboseMessagePrefix;
+		private final String streamMessagePrefix;
 
 		private final List<DatumStreamTimeRangeValidation> results = new ArrayList<>();
 		private long invalidHours = 0L;
@@ -310,19 +314,19 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			super();
 			this.restClient = restClient;
 			this.nodeAndSource = nodeAndSource;
-			this.verboseMessagePrefix = nodeAndSourceMessagePrefix(nodeAndSource);
+			this.streamMessagePrefix = nodeAndSourceMessagePrefix(nodeAndSource);
 		}
 
 		@Override
 		public Collection<DatumStreamTimeRangeValidation> call() throws Exception {
 			if (verbose) {
-				System.out.println(Ansi.AUTO.string(verboseMessagePrefix + " Validation starting"));
+				System.out.println(Ansi.AUTO.string(streamMessagePrefix + " Validation starting"));
 			}
 
 			final DatumStreamTimeRange range = RestUtils.datumStreamTimeRange(restClient, nodeAndSource,
 					Instant.now().minus(minDaysOffsetFromNow, DAYS).truncatedTo(DAYS));
 			if (range == null) {
-				System.out.println(verboseMessagePrefix + " Time range not available");
+				System.out.println(streamMessagePrefix + " Time range not available");
 				return List.of();
 			}
 			if (verbose) {
@@ -330,7 +334,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 				System.out.print(Ansi.AUTO.string("""
 						%s Stream range discovered: %s - %s (%s; %d days)
 						""".formatted(
-								  verboseMessagePrefix
+								  streamMessagePrefix
 								, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.start())
 								, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.end())
 								, range.zone().getId()
@@ -343,13 +347,13 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			findDifferences(range);
 
 			if (verbose) {
-				System.out.println(Ansi.AUTO.string("%s Validation complete".formatted(verboseMessagePrefix)));
+				System.out.println(Ansi.AUTO.string("%s Validation complete".formatted(streamMessagePrefix)));
 			}
 			return results;
 		}
 
 		private void findDifferences(DatumStreamTimeRange range) {
-			if (stop) {
+			if (stop || globalStop) {
 				return;
 			}
 			final long rangeHours = range.hourCount();
@@ -378,7 +382,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 					System.out.print(Ansi.AUTO.string("""
 							%s Difference discovered in range %s - %s (%s; %d days)
 							""".formatted(
-									  verboseMessagePrefix
+									  streamMessagePrefix
 									, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.start())
 									, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.end())
 									, range.zone().getId()
@@ -404,7 +408,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 								System.out.print(Ansi.AUTO.string("""
 										%s Maximum invalid hours (%d) reached: ending search
 										""".formatted(
-												  verboseMessagePrefix
+												  streamMessagePrefix
 												, maxStreamInvalid
 											)
 										));
