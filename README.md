@@ -31,6 +31,21 @@ hours for "reprocessing". Once reprocessing has been completed, the inconsistenc
 resolved. Alternatively the tool can submit the reprocessing requests directly for you with the
 `--mark-stale` option.
 
+# Use
+
+The tool is available in two styles:
+
+1. an executable Java JAR
+2. a native binary
+
+The native binary you can run directly, without needing Java to be installed. The JAR requires you
+to have Java 21+ installed on your system. To execute the JAR, run like this:
+
+```sh
+# execute JAR version
+java -jar sn-reading-aggregate-validator-1.0.0.jar [options here]
+```
+
 ## Typical process
 
 Using this tool follows this general process, assuming the `--mark-stale` option is used to 
