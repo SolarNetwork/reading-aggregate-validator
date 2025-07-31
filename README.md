@@ -31,6 +31,21 @@ hours for "reprocessing". Once reprocessing has been completed, the inconsistenc
 resolved. Alternatively the tool can submit the reprocessing requests directly for you with the
 `--mark-stale` option.
 
+# Use
+
+The tool is available in two styles:
+
+1. an executable Java JAR
+2. a native binary
+
+The native binary you can run directly, without needing Java to be installed. The JAR requires you
+to have Java 21+ installed on your system. To execute the JAR, run like this:
+
+```sh
+# execute JAR version
+java -jar sn-reading-aggregate-validator-1.0.0.jar [options here]
+```
+
 ## Typical process
 
 Using this tool follows this general process, assuming the `--mark-stale` option is used to 
@@ -45,6 +60,17 @@ In step 3, the amount of time to wait depends on how many, and the overall lengt
 are submitted to SolarNetwork for processing. SolarNetwork will process hour-level aggregations,
 then day aggregations, and finally month aggregations in batches, spread over time.
 
+## Limiting the scope of invalidations
+
+You can use the `--max-invalid=N` option to limit the number of differences before stopping the
+analysis of a stream. The tool will output a message if this limit is reached, for example:
+
+```
+[   123 /AA/BB/CC/GEN/1] Maximum invalid hours (250) reached: ending search
+```
+
+Simply re-run the tool with the same options to continue the validation (after waiting for the 
+previously submitted invalidations to reprocess).
 
 ## Compensating for higher-level aggregation differences
 
@@ -61,6 +87,7 @@ For example imagine a month-level aggregation range for January - March shows a 
 day-level differences are discovered for that same period. When `--compensate-higher-agg` is
 specified, the tool will generate one invalid hour for each of January, February, and March. This
 has the effect of getting those month aggregations reprocessed, hopefully resolving the difference.
+
 
 # Options
 
