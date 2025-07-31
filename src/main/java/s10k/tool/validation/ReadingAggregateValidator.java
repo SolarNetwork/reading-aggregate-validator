@@ -254,8 +254,8 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 						if (!repeat) {
 							row[0] = streamIdent.nodeId().toString();
 							row[1] = streamIdent.sourceId();
-							row[2] = ISO_DATE_OPT_TIME_ALT_LOCAL.format(invalidHour.timeRange().start());
-							row[3] = ISO_DATE_OPT_TIME_ALT_LOCAL.format(invalidHour.timeRange().end());
+							row[2] = ISO_DATE_OPT_TIME_ALT_LOCAL.format(invalidHour.range().start());
+							row[3] = ISO_DATE_OPT_TIME_ALT_LOCAL.format(invalidHour.range().end());
 							repeat = true;
 						} else {
 							Arrays.fill(row, 0, 4, "");

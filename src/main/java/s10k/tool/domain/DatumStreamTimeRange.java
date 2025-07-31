@@ -7,6 +7,10 @@ import java.time.ZoneId;
 
 /**
  * A datum stream time range.
+ * 
+ * @param nodeAndSource the stream identifier
+ * @param zone          the stream time zone
+ * @param timeRange     the time range
  */
 public record DatumStreamTimeRange(NodeAndSource nodeAndSource, ZoneId zone, LocalDateTimeRange timeRange) {
 

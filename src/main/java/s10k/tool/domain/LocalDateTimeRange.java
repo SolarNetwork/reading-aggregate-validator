@@ -8,6 +8,9 @@ import java.time.temporal.ChronoUnit;
 
 /**
  * A local date time range.
+ * 
+ * @param start the starting date
+ * @param end   the ending date
  */
 public record LocalDateTimeRange(LocalDateTime start, LocalDateTime end) implements Comparable<LocalDateTimeRange> {
 

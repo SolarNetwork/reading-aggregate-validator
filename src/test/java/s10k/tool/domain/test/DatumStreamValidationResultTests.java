@@ -58,10 +58,10 @@ public class DatumStreamValidationResultTests {
 		then(result)
 			.as("All hour ranges preserved")
 			.containsExactly(
-					  validations.get(1).timeRange()
-					, validations.get(2).timeRange()
-					, validations.get(3).timeRange()
-					, validations.get(4).timeRange()
+					  validations.get(1).range()
+					, validations.get(2).range()
+					, validations.get(3).range()
+					, validations.get(4).range()
 			)
 			;
 		// @formatter:off
@@ -89,10 +89,10 @@ public class DatumStreamValidationResultTests {
 		then(result)
 			.as("All hour ranges preserved and sorted by time")
 			.containsExactly(
-					  validations.get(3).timeRange()
-					, validations.get(2).timeRange()
-					, validations.get(4).timeRange()
-					, validations.get(1).timeRange()
+					  validations.get(3).range()
+					, validations.get(2).range()
+					, validations.get(4).range()
+					, validations.get(1).range()
 			)
 			;
 		// @formatter:off
@@ -120,8 +120,8 @@ public class DatumStreamValidationResultTests {
 		then(result)
 			.as("Adjacent hours merged")
 			.containsExactly(
-					  new LocalDateTimeRange(validations.get(2).timeRange().start(), validations.get(4).timeRange().end())
-					, new LocalDateTimeRange(validations.get(3).timeRange().start(), validations.get(1).timeRange().end())
+					  new LocalDateTimeRange(validations.get(2).range().start(), validations.get(4).range().end())
+					, new LocalDateTimeRange(validations.get(3).range().start(), validations.get(1).range().end())
 			)
 			;
 		// @formatter:off
@@ -149,7 +149,7 @@ public class DatumStreamValidationResultTests {
 		then(result)
 			.as("Adjacent hours merged with gap filled")
 			.containsExactly(
-					  new LocalDateTimeRange(validations.get(2).timeRange().start(), validations.get(4).timeRange().end())
+					  new LocalDateTimeRange(validations.get(2).range().start(), validations.get(4).range().end())
 			)
 			;
 		// @formatter:off

@@ -1,7 +1,10 @@
 package s10k.tool.domain;
 
 /**
- * A node and source.
+ * A node and source, uniquely identifying a datum stream.
+ * 
+ * @param nodeId   the node ID
+ * @param sourceId the source ID
  */
 public record NodeAndSource(Long nodeId, String sourceId) {
 

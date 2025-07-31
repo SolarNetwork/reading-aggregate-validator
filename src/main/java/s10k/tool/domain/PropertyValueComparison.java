@@ -4,6 +4,9 @@ import java.math.BigDecimal;
 
 /**
  * A property value comparison.
+ * 
+ * @param expected the expected value
+ * @param actual   the actual value
  */
 public record PropertyValueComparison(BigDecimal expected, BigDecimal actual) {
 

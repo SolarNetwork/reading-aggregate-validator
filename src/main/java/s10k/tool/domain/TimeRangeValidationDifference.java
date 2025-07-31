@@ -11,8 +11,12 @@ import net.solarnetwork.domain.datum.Datum;
 
 /**
  * Validation differences found on a time range.
+ * 
+ * @param aggregation the aggregation level the validation was performed at
+ * @param timeRange   the time range validated
+ * @param differences the discovered property differences
  */
-public record TimeRangeValidationDifference(Aggregation aggregation, LocalDateTimeRange timeRange,
+public record TimeRangeValidationDifference(Aggregation aggregation, LocalDateTimeRange range,
 		Map<String, PropertyValueComparison> differences) {
 
 	/**
@@ -75,7 +79,7 @@ public record TimeRangeValidationDifference(Aggregation aggregation, LocalDateTi
 	 * @return {@code true} if the range represents a single hour
 	 */
 	public boolean isHourRange() {
-		return timeRange.hourCount() == 1L;
+		return range.hourCount() == 1L;
 	}
 
 }

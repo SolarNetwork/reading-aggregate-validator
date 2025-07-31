@@ -10,6 +10,10 @@ import java.util.TreeSet;
 
 /**
  * A single datum stream's validation result.
+ * 
+ * @param nodeAndSource     the stream identifier
+ * @param zone              the stream time zone
+ * @param invalidTimeRanges list of time ranges with discovered differences
  */
 public record DatumStreamValidationResult(NodeAndSource nodeAndSource, ZoneId zone,
 		List<TimeRangeValidationDifference> invalidTimeRanges) {
@@ -57,8 +61,8 @@ public record DatumStreamValidationResult(NodeAndSource nodeAndSource, ZoneId zo
 			if (!validation.isHourRange()) {
 				continue;
 			}
-			LocalDateTimeRange adjacentAfter = forward.remove(validation.timeRange().end());
-			LocalDateTimeRange adjacentBefore = reverse.remove(validation.timeRange().start());
+			LocalDateTimeRange adjacentAfter = forward.remove(validation.range().end());
+			LocalDateTimeRange adjacentBefore = reverse.remove(validation.range().start());
 			if (adjacentAfter != null) {
 				reverse.remove(adjacentAfter.end());
 			}
@@ -71,14 +75,14 @@ public record DatumStreamValidationResult(NodeAndSource nodeAndSource, ZoneId zo
 				mergedRange = new LocalDateTimeRange(adjacentBefore.start(), adjacentAfter.end());
 			} else if (adjacentBefore != null) {
 				// merge before into current
-				mergedRange = new LocalDateTimeRange(adjacentBefore.start(), validation.timeRange().end());
+				mergedRange = new LocalDateTimeRange(adjacentBefore.start(), validation.range().end());
 			} else if (adjacentAfter != null) {
 				// mege after into current
-				mergedRange = new LocalDateTimeRange(validation.timeRange().start(), adjacentAfter.end());
+				mergedRange = new LocalDateTimeRange(validation.range().start(), adjacentAfter.end());
 			} else {
 				// new range
-				forward.put(validation.timeRange().start(), validation.timeRange());
-				reverse.put(validation.timeRange().end(), validation.timeRange());
+				forward.put(validation.range().start(), validation.range());
+				reverse.put(validation.range().end(), validation.range());
 			}
 			if (mergedRange != null) {
 				forward.put(mergedRange.start(), mergedRange);
@@ -97,7 +101,7 @@ public record DatumStreamValidationResult(NodeAndSource nodeAndSource, ZoneId zo
 		// @formatter:off
 		return invalidTimeRanges.stream()
 				.filter(TimeRangeValidationDifference::isHourRange)
-				.sorted((l, r) -> l.timeRange().compareTo(r.timeRange()))
+				.sorted((l, r) -> l.range().compareTo(r.range()))
 				.toList();
 		// @formatter:on
 	}
