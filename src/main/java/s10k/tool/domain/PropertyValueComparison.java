@@ -36,4 +36,9 @@ public record PropertyValueComparison(BigDecimal expected, BigDecimal actual) {
 		return act.subtract(exp).toPlainString();
 	}
 
+	@Override
+	public String toString() {
+		return "(" + expectedValue() + " != " + actualValue() + ")";
+	}
+
 }

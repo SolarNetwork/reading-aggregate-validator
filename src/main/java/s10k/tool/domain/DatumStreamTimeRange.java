@@ -1,5 +1,7 @@
 package s10k.tool.domain;
 
+import static java.time.temporal.ChronoUnit.DAYS;
+
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 
@@ -53,7 +55,7 @@ public record DatumStreamTimeRange(NodeAndSource nodeAndSource, ZoneId zone, Loc
 	 */
 	public DatumStreamTimeRange startingHoursRange(final long hourCount) {
 		return new DatumStreamTimeRange(nodeAndSource, zone,
-				new LocalDateTimeRange(start(), start().plusHours(hourCount)));
+				new LocalDateTimeRange(start(), start().plusHours(hourCount).truncatedTo(DAYS)));
 	}
 
 	/**
@@ -65,7 +67,7 @@ public record DatumStreamTimeRange(NodeAndSource nodeAndSource, ZoneId zone, Loc
 	 */
 	public DatumStreamTimeRange endingHoursRange(final long hourCount) {
 		return new DatumStreamTimeRange(nodeAndSource, zone,
-				new LocalDateTimeRange(start().plusHours(hourCount), end()));
+				new LocalDateTimeRange(start().plusHours(hourCount).truncatedTo(DAYS), end()));
 	}
 
 }

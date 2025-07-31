@@ -1,5 +1,7 @@
 package s10k.tool.validation;
 
+import static java.math.BigDecimal.ONE;
+import static java.math.BigDecimal.ZERO;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.time.temporal.ChronoUnit.DAYS;
 import static java.time.temporal.ChronoUnit.HOURS;
@@ -16,9 +18,11 @@ import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.temporal.TemporalAdjusters;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -65,7 +69,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 	private static final long HOURS_PER_DAY = 24L;
 
 	@Option(names = { "-v", "--verbose" }, description = "verbose output")
-	boolean verbose;
+	boolean[] verbosity;
 
 	@Option(names = { "-T", "--http-trace" }, description = "trace HTTP exchanges")
 	boolean traceHttp;
@@ -112,6 +116,13 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			"--max-invalid" }, description = "maximum invalid ranges per stream before giving up, or 0 for unlimited")
 	int maxStreamInvalid;
 
+	@Option(names = { "-R", "--newest-to-oldest" }, description = "process data in a reverse time fashion")
+	boolean newestToOldest;
+
+	@Option(names = {
+			"--compensate-higher-agg" }, description = "compensate for higher aggregation levels reporting differences that lower levels do not")
+	boolean compensateForHigherAggregations;
+
 	private final ClientHttpRequestFactory reqFactory;
 	private final ObjectMapper objectMapper;
 
@@ -131,7 +142,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 
 	@Override
 	public Integer call() throws Exception {
-		if (verbose) {
+		if (verbosity != null) {
 			// @formatter:off
 			System.out.println(Ansi.AUTO.string("""
 					@|bold Nodes:|@   %s
@@ -319,7 +330,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 
 		@Override
 		public Collection<DatumStreamTimeRangeValidation> call() throws Exception {
-			if (verbose) {
+			if (verbosity != null) {
 				System.out.println(Ansi.AUTO.string(streamMessagePrefix + " Validation starting"));
 			}
 
@@ -329,7 +340,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 				System.out.println(streamMessagePrefix + " Time range not available");
 				return List.of();
 			}
-			if (verbose) {
+			if (verbosity != null) {
 				// @formatter:off
 				System.out.print(Ansi.AUTO.string("""
 						%s Stream range discovered: %s - %s (%s; %d days)
@@ -346,19 +357,19 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 
 			findDifferences(range);
 
-			if (verbose) {
+			if (verbosity != null) {
 				System.out.println(Ansi.AUTO.string("%s Validation complete".formatted(streamMessagePrefix)));
 			}
 			return results;
 		}
 
-		private void findDifferences(DatumStreamTimeRange range) {
+		private boolean findDifferences(DatumStreamTimeRange range) {
 			if (stop || globalStop) {
-				return;
+				return false;
 			}
 			final long rangeHours = range.hourCount();
 			if (rangeHours < 1) {
-				return;
+				return false;
 			}
 
 			final long rangeMonths = range.monthCount();
@@ -372,23 +383,40 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 				partialAggregation = Hour;
 			}
 
+			boolean hourInvalidationsFound = false;
+
 			final DatumStreamValidationInfo info = queryDifference(range, aggregation, partialAggregation);
 			final Map<String, PropertyValueComparison> differences = info.differences(properties);
 			if (!differences.isEmpty()) {
 				results.add(new DatumStreamTimeRangeValidation(range, info, differences));
 
-				if (verbose || range.hourCount() > 1) {
+				if (verbosity != null || range.hourCount() > 1) {
 					// @formatter:off
-					System.out.print(Ansi.AUTO.string("""
-							%s Difference discovered in range %s - %s (%s; %d days)
-							""".formatted(
-									  streamMessagePrefix
-									, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.start())
-									, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.end())
-									, range.zone().getId()
-									, DAYS.between(range.start(), range.end())
-								)
-							));
+					if (verbosity != null && verbosity.length > 1) {
+						System.out.print(Ansi.AUTO.string("""
+								%s Difference discovered in range %s - %s (%s; %d days): %s %s
+								""".formatted(
+										  streamMessagePrefix
+										, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.start())
+										, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.end())
+										, range.zone().getId()
+										, DAYS.between(range.start(), range.end())
+										, aggregation
+										, differences
+									)
+								));
+					} else {
+						System.out.print(Ansi.AUTO.string("""
+								%s Difference discovered in range %s - %s (%s; %d days)
+								""".formatted(
+										  streamMessagePrefix
+										, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.start())
+										, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.end())
+										, range.zone().getId()
+										, DAYS.between(range.start(), range.end())
+									)
+								));
+					}
 					// @formatter:on
 				}
 
@@ -400,20 +428,10 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 						final DatumStreamValidationInfo hourInfo = queryDifference(hourRange, Hour, null);
 						final Map<String, PropertyValueComparison> hourDifferences = hourInfo.differences(properties);
 						if (!hourDifferences.isEmpty()) {
-							results.add(new DatumStreamTimeRangeValidation(hourRange, hourInfo, hourDifferences));
-							invalidHours++;
-							if (maxStreamInvalid > 0 && !(invalidHours < maxStreamInvalid)) {
-								stop = true;
-								// @formatter:off
-								System.out.print(Ansi.AUTO.string("""
-										%s Maximum invalid hours (%d) reached: ending search
-										""".formatted(
-												  streamMessagePrefix
-												, maxStreamInvalid
-											)
-										));
-								// @formatter:on
-								return;
+							hourInvalidationsFound = true;
+							if (addInvalidHourShouldStop(
+									new DatumStreamTimeRangeValidation(hourRange, hourInfo, hourDifferences))) {
+								return true;
 							}
 						}
 					}
@@ -422,11 +440,94 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 					final long rangeHalfHours = rangeHours / 2;
 					DatumStreamTimeRange leftRange = range.startingHoursRange(rangeHalfHours);
 					DatumStreamTimeRange rightRange = range.endingHoursRange(rangeHalfHours);
-					findDifferences(leftRange);
-					findDifferences(rightRange);
+					boolean result1 = findDifferences(newestToOldest ? rightRange : leftRange);
+					if (stop || globalStop) {
+						return hourInvalidationsFound;
+					}
+					boolean result2 = findDifferences(newestToOldest ? leftRange : rightRange);
+					if (compensateForHigherAggregations && !(result1 || result2)) {
+						// hmm, our overall range was different, but both sub-ranges are not;
+						// the higher-level aggregate must be off somewhere, so we need to
+						// recompute one hour within every aggregate in the overall range to try to fix
+						if (aggregation == Aggregation.Month) {
+							if (verbosity != null) {
+								System.out.print(Ansi.AUTO
+										.string("""
+												%s Difference discovered in range %s - %s (%s; %d days) but not in either half range; invalidating one day/month
+												"""
+												.formatted(streamMessagePrefix,
+														ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.start()),
+														ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.end()),
+														range.zone().getId(), DAYS.between(range.start(), range.end()),
+														aggregation, differences)));
+							}
+							for (LocalDateTime hour = range.start().with(TemporalAdjusters.firstDayOfMonth())
+									.plusHours(12); hour.isBefore(range.end()); hour = hour.plusMonths(1)) {
+								final DatumStreamTimeRange hourRange = new DatumStreamTimeRange(range.nodeAndSource(),
+										range.zone(), new LocalDateTimeRange(hour, hour.plusHours(1)));
+								final Map<String, PropertyValueComparison> syntheticDifferences = new LinkedHashMap<String, PropertyValueComparison>(
+										properties.length);
+								for (String propertyName : properties) {
+									syntheticDifferences.put(propertyName, new PropertyValueComparison(ZERO, ONE));
+								}
+								hourInvalidationsFound = true;
+								if (addInvalidHourShouldStop(
+										new DatumStreamTimeRangeValidation(hourRange, null, syntheticDifferences))) {
+									return true;
+								}
+							}
+						} else {
+							if (verbosity != null) {
+								System.out.print(Ansi.AUTO
+										.string("""
+												%s Difference discovered in range %s - %s (%s; %d days) but not in either half range; invalidating one hour/day
+												"""
+												.formatted(streamMessagePrefix,
+														ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.start()),
+														ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.end()),
+														range.zone().getId(), DAYS.between(range.start(), range.end()),
+														aggregation, differences)));
+							}
+							for (LocalDateTime hour = range.start().truncatedTo(DAYS).plusHours(12); hour
+									.isBefore(range.end()); hour = hour.plusDays(1)) {
+								final DatumStreamTimeRange hourRange = new DatumStreamTimeRange(range.nodeAndSource(),
+										range.zone(), new LocalDateTimeRange(hour, hour.plusHours(1)));
+								final Map<String, PropertyValueComparison> syntheticDifferences = new LinkedHashMap<>(
+										properties.length);
+								for (String propertyName : properties) {
+									syntheticDifferences.put(propertyName, new PropertyValueComparison(ZERO, ONE));
+								}
+								hourInvalidationsFound = true;
+								if (addInvalidHourShouldStop(
+										new DatumStreamTimeRangeValidation(hourRange, null, syntheticDifferences))) {
+									return true;
+								}
+							}
+						}
+					}
 				}
 			}
 
+			return hourInvalidationsFound;
+		}
+
+		private boolean addInvalidHourShouldStop(DatumStreamTimeRangeValidation validation) {
+			results.add(validation);
+			invalidHours++;
+			if (maxStreamInvalid > 0 && !(invalidHours < maxStreamInvalid)) {
+				stop = true;
+				// @formatter:off
+				System.out.print(Ansi.AUTO.string("""
+						%s Maximum invalid hours (%d) reached: ending search
+						""".formatted(
+								  streamMessagePrefix
+								, maxStreamInvalid
+							)
+						));
+				// @formatter:on
+				return true;
+			}
+			return false;
 		}
 
 		private DatumStreamValidationInfo queryDifference(DatumStreamTimeRange range, Aggregation aggregation,
