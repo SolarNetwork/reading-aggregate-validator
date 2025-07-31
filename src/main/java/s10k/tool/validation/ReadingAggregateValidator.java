@@ -11,17 +11,18 @@ import static net.solarnetwork.domain.datum.Aggregation.Day;
 import static net.solarnetwork.domain.datum.Aggregation.Hour;
 import static net.solarnetwork.util.DateUtils.ISO_DATE_OPT_TIME_ALT_LOCAL;
 import static org.supercsv.prefs.CsvPreference.STANDARD_PREFERENCE;
-import static s10k.tool.domain.DatumStreamTimeRangeValidation.uniqueHourTimeRanges;
+import static s10k.tool.domain.TimeRangeValidationDifference.differences;
 
 import java.io.FileWriter;
 import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.temporal.TemporalAdjusters;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -52,11 +53,11 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Help.Ansi;
 import picocli.CommandLine.Option;
 import s10k.tool.domain.DatumStreamTimeRange;
-import s10k.tool.domain.DatumStreamTimeRangeValidation;
-import s10k.tool.domain.DatumStreamValidationInfo;
+import s10k.tool.domain.DatumStreamValidationResult;
 import s10k.tool.domain.LocalDateTimeRange;
 import s10k.tool.domain.NodeAndSource;
 import s10k.tool.domain.PropertyValueComparison;
+import s10k.tool.domain.TimeRangeValidationDifference;
 import s10k.tool.support.RestUtils;
 
 /**
@@ -185,7 +186,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			return 1;
 		}
 
-		List<Future<Collection<DatumStreamTimeRangeValidation>>> taskResults = new ArrayList<>();
+		List<Future<DatumStreamValidationResult>> taskResults = new ArrayList<>();
 
 		try (ExecutorService threadPool = (threadCount > 1 ? Executors.newFixedThreadPool(threadCount)
 				: Executors.newSingleThreadExecutor())) {
@@ -201,106 +202,118 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			}
 		}
 
-		for (Future<Collection<DatumStreamTimeRangeValidation>> taskResult : taskResults) {
+		final List<DatumStreamValidationResult> results = new ArrayList<>();
+		boolean differencesFound = false;
+
+		for (Future<DatumStreamValidationResult> taskResult : taskResults) {
 			if (!taskResult.isDone()) {
 				continue;
 			}
-			try (ICsvListWriter csv = new CsvListWriter(
-					reportFileName != null ? new FileWriter(reportFileName, UTF_8) : new NullWriter(),
-					STANDARD_PREFERENCE)) {
-				csv.writeHeader("Node", "Source", "Start", "End", "Property", "Expected", "Actual", "Difference");
+			try {
+				DatumStreamValidationResult result = taskResult.get();
+				if (result.hasDifferences()) {
+					differencesFound = true;
+				}
+				results.add(result);
+			} catch (ExecutionException e) {
+				System.err.print("Validation task failed: " + e.getCause());
+			}
+		}
 
-				Collection<DatumStreamTimeRangeValidation> validations = taskResult.get();
+		try (ICsvListWriter csv = new CsvListWriter(
+				differencesFound && reportFileName != null ? new FileWriter(reportFileName, UTF_8) : new NullWriter(),
+				STANDARD_PREFERENCE)) {
+			csv.writeHeader("Node", "Source", "Start", "End", "Property", "Expected", "Actual", "Difference");
 
-				// generate full list of hours with differences as CSV data
-				List<DatumStreamTimeRangeValidation> invalidHours = validations.stream()
-						.filter(DatumStreamTimeRangeValidation::isHourRange)
-						.sorted((l, r) -> l.range().timeRange().compareTo(r.range().timeRange())).toList();
-				if (!invalidHours.isEmpty()) {
-					// all results will be for single stream
-					final NodeAndSource streamIdent = invalidHours.getFirst().range().nodeAndSource();
-					final String streamIdentMessagePrefix = nodeAndSourceMessagePrefix(streamIdent);
+			for (DatumStreamValidationResult result : results) {
+				final NodeAndSource streamIdent = result.nodeAndSource();
+				final String streamIdentMessagePrefix = nodeAndSourceMessagePrefix(streamIdent);
 
+				if (!result.hasDifferences()) {
+					System.out.println(Ansi.AUTO
+							.string("%s @|green No validation problems found|@".formatted(streamIdentMessagePrefix)));
+					continue;
+				}
+
+				final List<TimeRangeValidationDifference> invalidHours = result.invalidHours();
+
+				// @formatter:off
+				System.out.print(Ansi.AUTO.string("""
+						%s @|red %d|@ validation problems found
+						""".formatted(
+								  streamIdentMessagePrefix
+								, invalidHours.size()
+							)
+						));
+				// @formatter:on
+
+				for (TimeRangeValidationDifference invalidHour : invalidHours) {
+					boolean repeat = false;
+					for (Entry<String, PropertyValueComparison> diffEntry : invalidHour.differences().entrySet()) {
+						String[] row = new String[8];
+						if (!repeat) {
+							row[0] = streamIdent.nodeId().toString();
+							row[1] = streamIdent.sourceId();
+							row[2] = ISO_DATE_OPT_TIME_ALT_LOCAL.format(invalidHour.timeRange().start());
+							row[3] = ISO_DATE_OPT_TIME_ALT_LOCAL.format(invalidHour.timeRange().end());
+							repeat = true;
+						} else {
+							Arrays.fill(row, 0, 4, "");
+						}
+						row[4] = diffEntry.getKey();
+						row[5] = diffEntry.getValue().expectedValue();
+						row[6] = diffEntry.getValue().actualValue();
+						row[7] = diffEntry.getValue().differenceValue();
+						csv.write(row);
+					}
+				}
+
+				SortedSet<LocalDateTimeRange> staleTimeRanges = result.uniqueHourTimeRanges();
+				if (!staleTimeRanges.isEmpty()) {
 					// @formatter:off
-					System.out.print(Ansi.AUTO.string("""
-							%s @|red %d|@ validation problems found
+					System.out.println(Ansi.AUTO.string("""
+							%s @|red %d|@ ranges to mark stale
 							""".formatted(
 									  streamIdentMessagePrefix
-									, invalidHours.size()
+									, staleTimeRanges.size()
 								)
 							));
 					// @formatter:on
 
-					for (DatumStreamTimeRangeValidation invalidHour : invalidHours) {
-						boolean repeat = false;
-						for (Entry<String, PropertyValueComparison> diffEntry : invalidHour.differences().entrySet()) {
-							String[] row = new String[8];
-							if (!repeat) {
-								row[0] = invalidHour.range().nodeAndSource().nodeId().toString();
-								row[1] = invalidHour.range().nodeAndSource().sourceId();
-								row[2] = ISO_DATE_OPT_TIME_ALT_LOCAL.format(invalidHour.range().timeRange().start());
-								row[3] = ISO_DATE_OPT_TIME_ALT_LOCAL.format(invalidHour.range().timeRange().end());
-								repeat = true;
+					for (LocalDateTimeRange staleTimeRange : staleTimeRanges) {
+						URI markStaleUri = RestUtils.markStaleUri(streamIdent, staleTimeRange);
+						if (markStale) {
+							boolean marked = RestUtils.markStale(restClient, streamIdent, staleTimeRange);
+							if (marked) {
+								// @formatter:off
+								System.out.print(Ansi.AUTO.string("""
+										%s Marked range %s - %s as stale (%d hours)
+										""".formatted(
+												  streamIdentMessagePrefix
+												, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.start())
+												, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.end())
+												, HOURS.between(staleTimeRange.start(), staleTimeRange.end())
+											)
+										));
+								// @formatter:on
 							} else {
-								Arrays.fill(row, 0, 4, "");
+								// @formatter:off
+								System.out.print(Ansi.AUTO.string("""
+										%s @|Error|@ marking range %s - %s as stale (%d hours)
+										""".formatted(
+												  streamIdentMessagePrefix
+												, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.start())
+												, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.end())
+												, HOURS.between(staleTimeRange.start(), staleTimeRange.end())
+											)
+										));
+								// @formatter:on
 							}
-							row[4] = diffEntry.getKey();
-							row[5] = diffEntry.getValue().expectedValue();
-							row[6] = diffEntry.getValue().actualValue();
-							row[7] = diffEntry.getValue().differenceValue();
-							csv.write(row);
-						}
-					}
-
-					SortedSet<LocalDateTimeRange> staleTimeRanges = uniqueHourTimeRanges(validations);
-					if (!staleTimeRanges.isEmpty()) {
-						// @formatter:off
-						System.out.println(Ansi.AUTO.string("""
-								%s @|red %d|@ ranges to mark stale
-								""".formatted(
-										  streamIdentMessagePrefix
-										, staleTimeRanges.size()
-									)
-								));
-						// @formatter:on
-
-						for (LocalDateTimeRange staleTimeRange : staleTimeRanges) {
-							URI markStaleUri = RestUtils.markStaleUri(streamIdent, staleTimeRange);
-							if (markStale) {
-								boolean marked = RestUtils.markStale(restClient, streamIdent, staleTimeRange);
-								if (marked) {
-									// @formatter:off
-									System.out.print(Ansi.AUTO.string("""
-											%s Marked range %s - %s as stale (%d hours)
-											""".formatted(
-													  streamIdentMessagePrefix
-													, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.start())
-													, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.end())
-													, HOURS.between(staleTimeRange.start(), staleTimeRange.end())
-												)
-											));
-									// @formatter:on
-								} else {
-									// @formatter:off
-									System.out.print(Ansi.AUTO.string("""
-											%s @|Error|@ marking range %s - %s as stale (%d hours)
-											""".formatted(
-													  streamIdentMessagePrefix
-													, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.start())
-													, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.end())
-													, HOURS.between(staleTimeRange.start(), staleTimeRange.end())
-												)
-											));
-									// @formatter:on
-								}
-							} else {
-								System.out.println(markStaleUri);
-							}
+						} else {
+							System.out.println(markStaleUri);
 						}
 					}
 				}
-			} catch (ExecutionException e) {
-				System.err.print("Validation task failed: " + e.getCause());
 			}
 		}
 
@@ -311,13 +324,15 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 		return "[@|yellow %6d|@ @|yellow %s|@]".formatted(nodeAndSource.nodeId(), nodeAndSource.sourceId());
 	}
 
-	private final class StreamValidator implements Callable<Collection<DatumStreamTimeRangeValidation>> {
+	private final class StreamValidator implements Callable<DatumStreamValidationResult> {
 
 		private final RestClient restClient;
 		private final NodeAndSource nodeAndSource;
 		private final String streamMessagePrefix;
 
-		private final List<DatumStreamTimeRangeValidation> results = new ArrayList<>();
+		private final List<TimeRangeValidationDifference> results = new ArrayList<>();
+
+		private ZoneId zone = ZoneOffset.UTC;
 		private long invalidHours = 0L;
 		private boolean stop;
 
@@ -329,7 +344,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 		}
 
 		@Override
-		public Collection<DatumStreamTimeRangeValidation> call() throws Exception {
+		public DatumStreamValidationResult call() throws Exception {
 			if (verbosity != null) {
 				System.out.println(Ansi.AUTO.string(streamMessagePrefix + " Validation starting"));
 			}
@@ -338,8 +353,11 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 					Instant.now().minus(minDaysOffsetFromNow, DAYS).truncatedTo(DAYS));
 			if (range == null) {
 				System.out.println(streamMessagePrefix + " Time range not available");
-				return List.of();
+				return DatumStreamValidationResult.emptyValidationResult(nodeAndSource, zone);
 			}
+
+			zone = range.zone();
+
 			if (verbosity != null) {
 				// @formatter:off
 				System.out.print(Ansi.AUTO.string("""
@@ -360,7 +378,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			if (verbosity != null) {
 				System.out.println(Ansi.AUTO.string("%s Validation complete".formatted(streamMessagePrefix)));
 			}
-			return results;
+			return new DatumStreamValidationResult(nodeAndSource, zone, results);
 		}
 
 		private boolean findDifferences(DatumStreamTimeRange range) {
@@ -385,10 +403,9 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 
 			boolean hourInvalidationsFound = false;
 
-			final DatumStreamValidationInfo info = queryDifference(range, aggregation, partialAggregation);
-			final Map<String, PropertyValueComparison> differences = info.differences(properties);
-			if (!differences.isEmpty()) {
-				results.add(new DatumStreamTimeRangeValidation(range, info, differences));
+			final TimeRangeValidationDifference diff = queryDifference(range, aggregation, partialAggregation);
+			if (diff.hasDifferences()) {
+				results.add(diff);
 
 				if (verbosity != null || range.hourCount() > 1) {
 					// @formatter:off
@@ -402,7 +419,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 										, range.zone().getId()
 										, DAYS.between(range.start(), range.end())
 										, aggregation
-										, differences
+										, diff.differences()
 									)
 								));
 					} else {
@@ -425,12 +442,10 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 					for (LocalDateTime hour = range.start(); hour.isBefore(range.end()); hour = hour.plusHours(1)) {
 						final DatumStreamTimeRange hourRange = new DatumStreamTimeRange(range.nodeAndSource(),
 								range.zone(), new LocalDateTimeRange(hour, hour.plusHours(1)));
-						final DatumStreamValidationInfo hourInfo = queryDifference(hourRange, Hour, null);
-						final Map<String, PropertyValueComparison> hourDifferences = hourInfo.differences(properties);
-						if (!hourDifferences.isEmpty()) {
+						final TimeRangeValidationDifference hourDiff = queryDifference(hourRange, Hour, null);
+						if (hourDiff.hasDifferences()) {
 							hourInvalidationsFound = true;
-							if (addInvalidHourShouldStop(
-									new DatumStreamTimeRangeValidation(hourRange, hourInfo, hourDifferences))) {
+							if (addInvalidHourShouldStop(hourDiff)) {
 								return true;
 							}
 						}
@@ -459,20 +474,19 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 														ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.start()),
 														ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.end()),
 														range.zone().getId(), DAYS.between(range.start(), range.end()),
-														aggregation, differences)));
+														aggregation, diff.differences())));
 							}
 							for (LocalDateTime hour = range.start().with(TemporalAdjusters.firstDayOfMonth())
 									.plusHours(12); hour.isBefore(range.end()); hour = hour.plusMonths(1)) {
-								final DatumStreamTimeRange hourRange = new DatumStreamTimeRange(range.nodeAndSource(),
-										range.zone(), new LocalDateTimeRange(hour, hour.plusHours(1)));
+								final LocalDateTimeRange hourRange = new LocalDateTimeRange(hour, hour.plusHours(1));
 								final Map<String, PropertyValueComparison> syntheticDifferences = new LinkedHashMap<String, PropertyValueComparison>(
 										properties.length);
 								for (String propertyName : properties) {
 									syntheticDifferences.put(propertyName, new PropertyValueComparison(ZERO, ONE));
 								}
 								hourInvalidationsFound = true;
-								if (addInvalidHourShouldStop(
-										new DatumStreamTimeRangeValidation(hourRange, null, syntheticDifferences))) {
+								if (addInvalidHourShouldStop(new TimeRangeValidationDifference(aggregation, hourRange,
+										syntheticDifferences))) {
 									return true;
 								}
 							}
@@ -486,20 +500,19 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 														ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.start()),
 														ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.end()),
 														range.zone().getId(), DAYS.between(range.start(), range.end()),
-														aggregation, differences)));
+														aggregation, diff.differences())));
 							}
 							for (LocalDateTime hour = range.start().truncatedTo(DAYS).plusHours(12); hour
 									.isBefore(range.end()); hour = hour.plusDays(1)) {
-								final DatumStreamTimeRange hourRange = new DatumStreamTimeRange(range.nodeAndSource(),
-										range.zone(), new LocalDateTimeRange(hour, hour.plusHours(1)));
+								final LocalDateTimeRange hourRange = new LocalDateTimeRange(hour, hour.plusHours(1));
 								final Map<String, PropertyValueComparison> syntheticDifferences = new LinkedHashMap<>(
 										properties.length);
 								for (String propertyName : properties) {
 									syntheticDifferences.put(propertyName, new PropertyValueComparison(ZERO, ONE));
 								}
 								hourInvalidationsFound = true;
-								if (addInvalidHourShouldStop(
-										new DatumStreamTimeRangeValidation(hourRange, null, syntheticDifferences))) {
+								if (addInvalidHourShouldStop(new TimeRangeValidationDifference(aggregation, hourRange,
+										syntheticDifferences))) {
 									return true;
 								}
 							}
@@ -511,8 +524,8 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			return hourInvalidationsFound;
 		}
 
-		private boolean addInvalidHourShouldStop(DatumStreamTimeRangeValidation validation) {
-			results.add(validation);
+		private boolean addInvalidHourShouldStop(TimeRangeValidationDifference diff) {
+			results.add(diff);
 			invalidHours++;
 			if (maxStreamInvalid > 0 && !(invalidHours < maxStreamInvalid)) {
 				stop = true;
@@ -530,14 +543,13 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			return false;
 		}
 
-		private DatumStreamValidationInfo queryDifference(DatumStreamTimeRange range, Aggregation aggregation,
+		private TimeRangeValidationDifference queryDifference(DatumStreamTimeRange range, Aggregation aggregation,
 				Aggregation partialAggregation) {
 			final Datum expected = RestUtils.readingDifference(restClient, nodeAndSource, range.start(), range.end(),
 					properties);
 			final Datum rollup = RestUtils.readingDifferenceRollup(restClient, nodeAndSource, range.start(),
 					range.end(), properties, aggregation, partialAggregation);
-
-			return new DatumStreamValidationInfo(expected, rollup);
+			return differences(aggregation, range.timeRange(), expected, rollup, properties);
 		}
 
 	}
