@@ -72,7 +72,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 	@Option(names = { "-v", "--verbose" }, description = "verbose output")
 	boolean[] verbosity;
 
-	@Option(names = { "-T", "--http-trace" }, description = "trace HTTP exchanges")
+	@Option(names = { "--http-trace" }, description = "trace HTTP exchanges")
 	boolean traceHttp;
 
 	@Option(names = { "-j", "--threads" }, description = "number of concurrent threads", defaultValue = "1")
@@ -466,15 +466,18 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 						// recompute one hour within every aggregate in the overall range to try to fix
 						if (aggregation == Aggregation.Month) {
 							if (verbosity != null) {
-								System.out.print(Ansi.AUTO
-										.string("""
-												%s Difference discovered in range %s - %s (%s; %d days) but not in either half range; invalidating one day/month
-												"""
-												.formatted(streamMessagePrefix,
-														ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.start()),
-														ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.end()),
-														range.zone().getId(), DAYS.between(range.start(), range.end()),
-														aggregation, diff.differences())));
+								// @formatter:off
+								System.out.print(Ansi.AUTO.string("""
+										%s Difference discovered in range %s - %s (%s; %d days) but not in either half range; invalidating one day/month
+										""".formatted(
+												  streamMessagePrefix
+												, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.start())
+												, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.end())
+												, range.zone().getId()
+												, DAYS.between(range.start(), range.end())
+											)
+										));
+								// @formatter:on
 							}
 							for (LocalDateTime hour = range.start().with(TemporalAdjusters.firstDayOfMonth())
 									.plusHours(12); hour.isBefore(range.end()); hour = hour.plusMonths(1)) {
@@ -492,15 +495,18 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 							}
 						} else {
 							if (verbosity != null) {
-								System.out.print(Ansi.AUTO
-										.string("""
-												%s Difference discovered in range %s - %s (%s; %d days) but not in either half range; invalidating one hour/day
-												"""
-												.formatted(streamMessagePrefix,
-														ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.start()),
-														ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.end()),
-														range.zone().getId(), DAYS.between(range.start(), range.end()),
-														aggregation, diff.differences())));
+								// @formatter:off
+								System.out.print(Ansi.AUTO.string("""
+										%s Difference discovered in range %s - %s (%s; %d days) but not in either half range; invalidating one hour/day
+										""".formatted(
+												  streamMessagePrefix
+												, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.start())
+												, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.end())
+												, range.zone().getId()
+												, DAYS.between(range.start(), range.end())
+											)
+										));
+								// @formatter:on
 							}
 							for (LocalDateTime hour = range.start().truncatedTo(DAYS).plusHours(12); hour
 									.isBefore(range.end()); hour = hour.plusDays(1)) {

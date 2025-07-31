@@ -47,7 +47,6 @@ public record DatumStreamValidationResult(NodeAndSource nodeAndSource, ZoneId zo
 	 * {@code validations}.
 	 * </p>
 	 * 
-	 * @param validations the validations to inspect
 	 * @return the ordered set of time ranges
 	 */
 	public SortedSet<LocalDateTimeRange> uniqueHourTimeRanges() {
