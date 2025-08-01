@@ -6,7 +6,7 @@ are found, the tool generates a detailed report and can even submit "reprocessin
 SolarNetwork, to get the differences eliminated.
 
 Normally there should not be any differences between the raw datum stream data and the cached
-aggregates SolarNetwork automatically maintains. However, over time anomalies can creep in in
+aggregates SolarNetwork automatically maintains. However, over time anomalies can creep in
 inadvertently, making different views on the same data appear to be inconsistent.
 
 <img alt="Screen shot of tool in action" src="docs/img/sn-reading-aggregate-validator-output@2x.png" width="1011">
