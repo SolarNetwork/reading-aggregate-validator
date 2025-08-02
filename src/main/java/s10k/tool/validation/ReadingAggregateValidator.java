@@ -352,7 +352,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			final DatumStreamTimeRange range = RestUtils.datumStreamTimeRange(restClient, nodeAndSource,
 					Instant.now().minus(minDaysOffsetFromNow, DAYS).truncatedTo(DAYS));
 			if (range == null) {
-				System.out.println(streamMessagePrefix + " Time range not available");
+				System.out.println(Ansi.AUTO.string(streamMessagePrefix + " Time range not available"));
 				return DatumStreamValidationResult.emptyValidationResult(nodeAndSource, zone);
 			}
 
