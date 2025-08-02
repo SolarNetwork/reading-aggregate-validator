@@ -29,6 +29,7 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.SortedSet;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -192,8 +193,10 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 
 		try (ExecutorService threadPool = (threadCount > 1 ? Executors.newFixedThreadPool(threadCount)
 				: Executors.newSingleThreadExecutor())) {
-			for (NodeAndSource nodeAndSource : streams) {
-				taskResults.add(threadPool.submit(new StreamValidator(restClient, nodeAndSource)));
+			for (NodeAndSource streamIdent : streams) {
+				final String streamIdentMessagePrefix = nodeAndSourceMessagePrefix(streamIdent, streams);
+				taskResults
+						.add(threadPool.submit(new StreamValidator(restClient, streamIdent, streamIdentMessagePrefix)));
 			}
 			threadPool.shutdown();
 			boolean finished = threadPool.awaitTermination(maxWait.toSeconds(), TimeUnit.SECONDS);
@@ -218,7 +221,14 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 				}
 				results.add(result);
 			} catch (ExecutionException e) {
-				System.err.print("Validation task failed: " + e.getCause());
+				Throwable cause = e.getCause();
+				String msg;
+				if (cause instanceof CancellationException) {
+					msg = "cancelled from timeout";
+				} else {
+					msg = cause.toString();
+				}
+				System.err.println("Validation task failed: " + msg);
 			}
 		}
 
@@ -231,7 +241,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 
 			for (DatumStreamValidationResult result : results) {
 				final NodeAndSource streamIdent = result.nodeAndSource();
-				final String streamIdentMessagePrefix = nodeAndSourceMessagePrefix(streamIdent);
+				final String streamIdentMessagePrefix = nodeAndSourceMessagePrefix(streamIdent, streams);
 
 				if (!result.hasDifferences()) {
 					System.out.println(Ansi.AUTO
@@ -324,8 +334,21 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 		return 0;
 	}
 
-	private static String nodeAndSourceMessagePrefix(NodeAndSource nodeAndSource) {
-		return "[@|yellow %6d|@ @|yellow %s|@]".formatted(nodeAndSource.nodeId(), nodeAndSource.sourceId());
+	private static String nodeAndSourceMessagePrefix(NodeAndSource nodeAndSource, List<NodeAndSource> allStreams) {
+		int nodeIdWidth = 1;
+		int sourceIdWidth = 1;
+		for (NodeAndSource streamIdent : allStreams) {
+			int w = streamIdent.nodeId().toString().length();
+			if (w > nodeIdWidth) {
+				nodeIdWidth = w;
+			}
+			w = streamIdent.sourceId().length();
+			if (w > sourceIdWidth) {
+				sourceIdWidth = w;
+			}
+		}
+		return ("[@|yellow %" + nodeIdWidth + "d|@ @|yellow %-" + sourceIdWidth + "s|@]")
+				.formatted(nodeAndSource.nodeId(), nodeAndSource.sourceId());
 	}
 
 	private final class StreamValidator implements Callable<DatumStreamValidationResult> {
@@ -340,11 +363,11 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 		private long invalidHours = 0L;
 		private boolean stop;
 
-		private StreamValidator(RestClient restClient, NodeAndSource nodeAndSource) {
+		private StreamValidator(RestClient restClient, NodeAndSource nodeAndSource, String streamMessagePrefix) {
 			super();
 			this.restClient = restClient;
 			this.nodeAndSource = nodeAndSource;
-			this.streamMessagePrefix = nodeAndSourceMessagePrefix(nodeAndSource);
+			this.streamMessagePrefix = streamMessagePrefix;
 		}
 
 		@Override
