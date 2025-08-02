@@ -38,6 +38,7 @@ import java.util.concurrent.TimeUnit;
 
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.HttpClientErrorException.TooManyRequests;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 import org.supercsv.io.CsvListWriter;
@@ -470,7 +471,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 						final DatumStreamTimeRange hourRange = new DatumStreamTimeRange(range.nodeAndSource(),
 								range.zone(), new LocalDateTimeRange(hour, hour.plusHours(1)));
 						final TimeRangeValidationDifference hourDiff = queryDifference(hourRange, Hour, null);
-						if (hourDiff.hasDifferences()) {
+						if (hourDiff != null && hourDiff.hasDifferences()) {
 							hourInvalidationsFound = true;
 							if (addInvalidHourShouldStop(hourDiff)) {
 								return true;
@@ -487,7 +488,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 						return hourInvalidationsFound;
 					}
 					boolean result2 = findDifferences(newestToOldest ? leftRange : rightRange);
-					if (compensateForHigherAggregations && !(result1 || result2)) {
+					if (compensateForHigherAggregations && (!stop || globalStop) && !(result1 || result2)) {
 						// hmm, our overall range was different, but both sub-ranges are not;
 						// the higher-level aggregate must be off somewhere, so we need to
 						// recompute one hour within every aggregate in the overall range to try to fix
@@ -578,11 +579,26 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 
 		private TimeRangeValidationDifference queryDifference(DatumStreamTimeRange range, Aggregation aggregation,
 				Aggregation partialAggregation) {
-			final Datum expected = RestUtils.readingDifference(restClient, nodeAndSource, range.start(), range.end(),
-					properties);
-			final Datum rollup = RestUtils.readingDifferenceRollup(restClient, nodeAndSource, range.start(),
-					range.end(), properties, aggregation, partialAggregation);
-			return differences(aggregation, range.timeRange(), expected, rollup, properties);
+			try {
+				final Datum expected = RestUtils.readingDifference(restClient, nodeAndSource, range.start(),
+						range.end(), properties);
+				final Datum rollup = RestUtils.readingDifferenceRollup(restClient, nodeAndSource, range.start(),
+						range.end(), properties, aggregation, partialAggregation);
+				return differences(aggregation, range.timeRange(), expected, rollup, properties);
+			} catch (TooManyRequests e) {
+				// sleep, and then try again
+				if (!(stop || globalStop)) {
+					try {
+						Thread.sleep(1000L);
+						if (!(stop || globalStop)) {
+							return queryDifference(range, aggregation, partialAggregation);
+						}
+					} catch (InterruptedException e2) {
+						stop = true;
+					}
+				}
+				return null;
+			}
 		}
 
 	}
