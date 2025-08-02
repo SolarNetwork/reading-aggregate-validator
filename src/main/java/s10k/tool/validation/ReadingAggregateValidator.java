@@ -220,6 +220,8 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			}
 		}
 
+		results.sort(null);
+
 		try (ICsvListWriter csv = new CsvListWriter(
 				differencesFound && reportFileName != null ? new FileWriter(reportFileName, UTF_8) : new NullWriter(),
 				STANDARD_PREFERENCE)) {

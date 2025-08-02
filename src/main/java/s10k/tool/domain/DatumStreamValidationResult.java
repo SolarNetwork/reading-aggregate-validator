@@ -16,7 +16,7 @@ import java.util.TreeSet;
  * @param invalidTimeRanges list of time ranges with discovered differences
  */
 public record DatumStreamValidationResult(NodeAndSource nodeAndSource, ZoneId zone,
-		List<TimeRangeValidationDifference> invalidTimeRanges) {
+		List<TimeRangeValidationDifference> invalidTimeRanges) implements Comparable<DatumStreamValidationResult> {
 
 	/**
 	 * Create an empty validation result.
@@ -27,6 +27,11 @@ public record DatumStreamValidationResult(NodeAndSource nodeAndSource, ZoneId zo
 	 */
 	public static DatumStreamValidationResult emptyValidationResult(NodeAndSource nodeAndSource, ZoneId zone) {
 		return new DatumStreamValidationResult(nodeAndSource, zone, List.of());
+	}
+
+	@Override
+	public int compareTo(DatumStreamValidationResult o) {
+		return nodeAndSource.compareTo(o.nodeAndSource);
 	}
 
 	/**
