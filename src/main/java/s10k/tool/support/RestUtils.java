@@ -114,16 +114,25 @@ public final class RestUtils {
 	 * @param accumulatingProperties the accumulating properties that must be
 	 *                               available in the datum streams
 	 * @return the nodes and sources
-	 * @throws RestClientException if the request fails
+	 * @throws IllegalArgumentException if both {@code nodeIds} and
+	 *                                  {@code sourceIds} are empty
+	 * @throws RestClientException      if the request fails
 	 */
 	public static List<NodeAndSource> nodesAndSources(RestClient restClient, Long[] nodeIds, String[] sourceIds,
 			String[] accumulatingProperties) {
+		if ((nodeIds == null || nodeIds.length < 1) && (sourceIds == null || sourceIds.length < 1)) {
+			throw new IllegalArgumentException("Either node IDs or source IDs (or both) must be provided.");
+		}
 		// @formatter:off
 		JsonNode nodesAndSources = restClient.get()
 			.uri(b -> {
-				b.path("/solarquery/api/v1/sec/nodes/sources");
-				b.queryParam("nodeIds", stream(nodeIds).map(Object::toString).collect(joining(",")));
-				b.queryParam("sourceIds", stream(sourceIds).collect(joining(",")));
+				b.path("/solarquery/api/v1/sec/datum/stream/meta/node/ids");
+				if(nodeIds != null && nodeIds.length > 0) {
+					b.queryParam("nodeIds", stream(nodeIds).map(Object::toString).collect(joining(",")));
+				}
+				if(sourceIds != null && sourceIds.length > 0) {
+					b.queryParam("sourceIds", stream(sourceIds).collect(joining(",")));
+				}
 				b.queryParam("accumulatingPropertyNames", stream(accumulatingProperties).collect(joining(",")));
 				return b.build();
 			})
@@ -134,7 +143,7 @@ public final class RestUtils {
 		// @formatter:on
 		List<NodeAndSource> results = new ArrayList<>();
 		for (JsonNode tuple : nodesAndSources.findPath("data")) {
-			var nodeSource = new NodeAndSource(tuple.path("nodeId").longValue(), tuple.path("sourceId").textValue());
+			var nodeSource = new NodeAndSource(tuple.path("objectId").longValue(), tuple.path("sourceId").textValue());
 			if (nodeSource.isValid()) {
 				results.add(nodeSource);
 			}

@@ -5,11 +5,11 @@ import static java.math.BigDecimal.ZERO;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.time.temporal.ChronoUnit.DAYS;
 import static java.time.temporal.ChronoUnit.HOURS;
-import static java.util.Arrays.stream;
 import static java.util.stream.Collectors.joining;
 import static net.solarnetwork.domain.datum.Aggregation.Day;
 import static net.solarnetwork.domain.datum.Aggregation.Hour;
 import static net.solarnetwork.util.DateUtils.ISO_DATE_OPT_TIME_ALT_LOCAL;
+import static net.solarnetwork.util.StringNaturalSortComparator.CASE_INSENSITIVE_NATURAL_SORT;
 import static org.supercsv.prefs.CsvPreference.STANDARD_PREFERENCE;
 import static s10k.tool.domain.TimeRangeValidationDifference.differences;
 
@@ -82,7 +82,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 	boolean usageHelpRequested;
 
 	@Option(names = { "-node",
-			"--node-id" }, description = "a node ID to validate", required = true, split = "\\s*,\\s*", splitSynopsisLabel = ",")
+			"--node-id" }, description = "a node ID to validate", split = "\\s*,\\s*", splitSynopsisLabel = ",")
 	Long[] nodeIds;
 
 	@Option(names = { "-source",
@@ -143,18 +143,6 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 
 	@Override
 	public Integer call() throws Exception {
-		if (verbosity != null) {
-			// @formatter:off
-			System.out.println(Ansi.AUTO.string("""
-					@|bold Nodes:|@   %s
-					@|bold Sources:|@ %s
-					""".formatted(
-							stream(nodeIds).map(v -> "@|yellow %d|@".formatted(v)).collect(joining(", ")),
-							stream(sourceIds).map(v -> "@|yellow %s|@".formatted(v)).collect(joining(", "))
-					)));
-			// @formatter:on
-		}
-
 		// compute signing key, then throw out the secret
 		final Instant signingDate = Instant.now();
 		final var credProvider = new StaticAuthorizationCredentialsProvider(tokenId,
@@ -184,6 +172,20 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 					"""));
 			// @formatter:on
 			return 1;
+		}
+
+		if (verbosity != null) {
+			// @formatter:off
+			System.out.println(Ansi.AUTO.string("""
+					@|bold Nodes:|@   %s
+					@|bold Sources:|@ %s
+					""".formatted(
+							streams.stream().map(NodeAndSource::nodeId).distinct().sorted()
+								.map(v -> "@|yellow %d|@".formatted(v)).collect(joining(", ")),
+							streams.stream().map(NodeAndSource::sourceId).distinct().sorted(CASE_INSENSITIVE_NATURAL_SORT)
+								.map(v -> "@|yellow %s|@".formatted(v)).collect(joining(", "))
+					)));
+			// @formatter:on
 		}
 
 		List<Future<DatumStreamValidationResult>> taskResults = new ArrayList<>();
