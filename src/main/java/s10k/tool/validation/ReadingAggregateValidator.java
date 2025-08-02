@@ -271,7 +271,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 				SortedSet<LocalDateTimeRange> staleTimeRanges = result.uniqueHourTimeRanges();
 				if (!staleTimeRanges.isEmpty()) {
 					// @formatter:off
-					System.out.println(Ansi.AUTO.string("""
+					System.out.print(Ansi.AUTO.string("""
 							%s @|red %d|@ ranges to mark stale
 							""".formatted(
 									  streamIdentMessagePrefix
