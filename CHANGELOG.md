@@ -19,6 +19,8 @@ Tool.
 
  * Better native image support.
  * Tidier and more consistent output formatting.
+ * Improve performance of day level hour-by-hour difference comparisons.
+
 
 ## [1.0.0](https://github.com/SolarNetwork/reading-aggregate-validator/tree/1.0.0)
 

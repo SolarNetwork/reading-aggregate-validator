@@ -27,6 +27,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.NavigableMap;
 import java.util.SortedSet;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
@@ -498,11 +499,16 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 				}
 
 				if (rangeHours <= HOURS_PER_DAY) {
-					// reach final hour-level aggregate comparison so iterate over hours
+					// load entire range of hour aggregates in one query
+					final NavigableMap<Instant, Datum> hourAggregates = RestUtils.readingDifferenceAggregates(
+							restClient, nodeAndSource, range.start(), range.end(), properties, Hour);
+
+					// then reach final hour-level aggregate comparison so iterate over hours
 					for (LocalDateTime hour = range.start(); hour.isBefore(range.end()); hour = hour.plusHours(1)) {
 						final DatumStreamTimeRange hourRange = new DatumStreamTimeRange(range.nodeAndSource(),
 								range.zone(), new LocalDateTimeRange(hour, hour.plusHours(1)));
-						final TimeRangeValidationDifference hourDiff = queryDifference(hourRange, Hour, null);
+						final TimeRangeValidationDifference hourDiff = queryDifference(hourRange, Hour,
+								hourAggregates.get(hour.atZone(zone).toInstant()));
 						if (hourDiff != null && hourDiff.hasDifferences()) {
 							hourInvalidationsFound = true;
 							if (addInvalidHourShouldStop(hourDiff)) {
@@ -612,11 +618,9 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 		private TimeRangeValidationDifference queryDifference(DatumStreamTimeRange range, Aggregation aggregation,
 				Aggregation partialAggregation) {
 			try {
-				final Datum expected = RestUtils.readingDifference(restClient, nodeAndSource, range.start(),
-						range.end(), properties);
 				final Datum rollup = RestUtils.readingDifferenceRollup(restClient, nodeAndSource, range.start(),
 						range.end(), properties, aggregation, partialAggregation);
-				return differences(aggregation, range.timeRange(), expected, rollup, properties);
+				return queryDifference(range, aggregation, rollup);
 			} catch (TooManyRequests e) {
 				// sleep, and then try again
 				if (!(stop || globalStop)) {
@@ -624,6 +628,28 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 						Thread.sleep(1000L);
 						if (!(stop || globalStop)) {
 							return queryDifference(range, aggregation, partialAggregation);
+						}
+					} catch (InterruptedException e2) {
+						stop = true;
+					}
+				}
+				return null;
+			}
+		}
+
+		private TimeRangeValidationDifference queryDifference(DatumStreamTimeRange range, Aggregation aggregation,
+				Datum rollup) {
+			try {
+				final Datum expected = RestUtils.readingDifference(restClient, nodeAndSource, range.start(),
+						range.end(), properties);
+				return differences(aggregation, range.timeRange(), expected, rollup, properties);
+			} catch (TooManyRequests e) {
+				// sleep, and then try again
+				if (!(stop || globalStop)) {
+					try {
+						Thread.sleep(1000L);
+						if (!(stop || globalStop)) {
+							return queryDifference(range, aggregation, rollup);
 						}
 					} catch (InterruptedException e2) {
 						stop = true;

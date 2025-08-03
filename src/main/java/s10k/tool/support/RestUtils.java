@@ -15,6 +15,8 @@ import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.NavigableMap;
+import java.util.TreeMap;
 
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.MediaType;
@@ -204,25 +206,39 @@ public final class RestUtils {
 	private static Datum firstDatum(ObjectDatumStreamDataSet<StreamDatum> results, String[] accumulatingProperties) {
 		for (StreamDatum d : results) {
 			ObjectDatumStreamMetadata streamMeta = results.metadataForStreamId(d.getStreamId());
-			assert streamMeta != null;
-			DatumSamples samples = new DatumSamples();
-			DatumProperties props = d.getProperties();
-			for (String propName : accumulatingProperties) {
-				int propIdx = streamMeta.propertyIndex(DatumSamplesType.Accumulating, propName);
-				if (propIdx >= 0) {
-					BigDecimal propVal = props.accumulatingValue(propIdx);
-					samples.putAccumulatingSampleValue(propName, propVal);
-				}
-			}
-			return GeneralDatum.nodeDatum(streamMeta.getObjectId(), streamMeta.getSourceId(), d.getTimestamp(),
-					samples);
+			return generalDatum(streamMeta, d, accumulatingProperties);
 		}
 		return null;
 	}
 
+	private static NavigableMap<Instant, Datum> allDatum(ObjectDatumStreamDataSet<StreamDatum> results,
+			String[] accumulatingProperties) {
+		var result = new TreeMap<Instant, Datum>();
+		for (StreamDatum d : results) {
+			ObjectDatumStreamMetadata streamMeta = results.metadataForStreamId(d.getStreamId());
+			Datum datum = generalDatum(streamMeta, d, accumulatingProperties);
+			result.put(d.getTimestamp(), datum);
+		}
+		return result;
+	}
+
+	private static GeneralDatum generalDatum(ObjectDatumStreamMetadata streamMeta, StreamDatum d,
+			String[] accumulatingProperties) {
+		assert streamMeta != null && d != null && accumulatingProperties != null;
+		DatumSamples samples = new DatumSamples();
+		DatumProperties props = d.getProperties();
+		for (String propName : accumulatingProperties) {
+			int propIdx = streamMeta.propertyIndex(DatumSamplesType.Accumulating, propName);
+			if (propIdx >= 0) {
+				BigDecimal propVal = props.accumulatingValue(propIdx);
+				samples.putAccumulatingSampleValue(propName, propVal);
+			}
+		}
+		return GeneralDatum.nodeDatum(streamMeta.getObjectId(), streamMeta.getSourceId(), d.getTimestamp(), samples);
+	}
+
 	/**
-	 * Query for the available date range for a datum stream, rounded to hour
-	 * granularity.
+	 * Query for a {@code Difference} reading datum.
 	 * 
 	 * @param restClient             the REST client to use
 	 * @param nodeAndSource          the datum stream identifier
@@ -254,8 +270,8 @@ public final class RestUtils {
 	}
 
 	/**
-	 * Query for the available date range for a datum stream, rounded to hour
-	 * granularity.
+	 * Query for a {@code Difference} rollup datum, or hourly aggregate datum if the
+	 * time range is exactly one hour.
 	 * 
 	 * @param restClient             the REST client to use
 	 * @param nodeAndSource          the datum stream identifier
@@ -295,6 +311,43 @@ public final class RestUtils {
 			;
 		// @formatter:on
 		return firstDatum(results, accumulatingProperties);
+	}
+
+	/**
+	 * Query for aggregate datum for a date range.
+	 * 
+	 * @param restClient             the REST client to use
+	 * @param nodeAndSource          the datum stream identifier
+	 * @param startDate              the start date
+	 * @param endDate                the end date
+	 * @param accumulatingProperties the accumulating properties to extract
+	 * @param aggregation            the aggregation
+	 * @param partialAggregation     an optional partial aggregation
+	 * @return the range, or {@code null} if not available
+	 * @throws RestClientException if the request fails
+	 */
+	public static NavigableMap<Instant, Datum> readingDifferenceAggregates(RestClient restClient,
+			NodeAndSource nodeAndSource, LocalDateTime startDate, LocalDateTime endDate,
+			String[] accumulatingProperties, Aggregation aggregation) {
+		// @formatter:off
+		ObjectDatumStreamDataSet<StreamDatum> results = restClient.get()
+			.uri(b -> {
+				b.path("/solarquery/api/v1/sec/datum/stream/reading")
+					.queryParam("nodeId", nodeAndSource.nodeId())
+					.queryParam("sourceId", nodeAndSource.sourceId())
+					.queryParam("localStartDate", startDate)
+					.queryParam("localEndDate", endDate)
+					.queryParam("readingType", "Difference")
+					.queryParam("aggregation", aggregation)
+					;
+				return b.build();
+			})
+			.accept(MediaType.APPLICATION_JSON)
+			.retrieve()
+			.body(STREAM_DATUM_SET_TYPEREF)
+			;
+		// @formatter:on
+		return allDatum(results, accumulatingProperties);
 	}
 
 	/**
