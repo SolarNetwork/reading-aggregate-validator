@@ -322,7 +322,6 @@ public final class RestUtils {
 	 * @param endDate                the end date
 	 * @param accumulatingProperties the accumulating properties to extract
 	 * @param aggregation            the aggregation
-	 * @param partialAggregation     an optional partial aggregation
 	 * @return the range, or {@code null} if not available
 	 * @throws RestClientException if the request fails
 	 */
