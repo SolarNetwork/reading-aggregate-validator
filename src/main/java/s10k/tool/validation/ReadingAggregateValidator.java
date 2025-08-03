@@ -501,8 +501,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 
 				if (rangeHours <= HOURS_PER_DAY) {
 					// load entire range of hour aggregates in one query
-					final NavigableMap<Instant, Datum> hourAggregates = RestUtils.readingDifferenceAggregates(
-							restClient, nodeAndSource, range.start(), range.end(), properties, Hour);
+					final NavigableMap<Instant, Datum> hourAggregates = readingDifferenceAggregates(range);
 
 					// then reach final hour-level aggregate comparison so iterate over hours
 					for (LocalDateTime hour = range.start(); hour.isBefore(range.end()); hour = hour.plusHours(1)) {
@@ -651,6 +650,26 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 						Thread.sleep(1000L);
 						if (!(stop || globalStop)) {
 							return queryDifference(range, aggregation, rollup);
+						}
+					} catch (InterruptedException e2) {
+						stop = true;
+					}
+				}
+				return null;
+			}
+		}
+
+		private NavigableMap<Instant, Datum> readingDifferenceAggregates(DatumStreamTimeRange range) {
+			try {
+				return RestUtils.readingDifferenceAggregates(restClient, nodeAndSource, range.start(), range.end(),
+						properties, Hour);
+			} catch (TooManyRequests e) {
+				// sleep, and then try again
+				if (!(stop || globalStop)) {
+					try {
+						Thread.sleep(1000L);
+						if (!(stop || globalStop)) {
+							return readingDifferenceAggregates(range);
 						}
 					} catch (InterruptedException e2) {
 						stop = true;
