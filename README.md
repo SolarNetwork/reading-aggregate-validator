@@ -112,6 +112,7 @@ Run the tool with `-h` or `--help` to display all the available options.
 
 | Option | Description |
 |:-------|:------------|
+| `-i` `--incremental-mark-stale` | Mark stale (or report) immediately after each stream's validation completes. Otherwise wait for all streams to finish processing before marking them stale. |
 | `-m` `--mark-stale` | Use the `/datum/maint/agg/stale` to mark time ranges with discovered differences as "stale". |
 | `-r N` `--report-file=N` | A file name to generate a CSV report to, of all invalid time ranges discovered. |
 | `--compensate-higher-agg` | Compensate for differences found in higher aggregation levels but not corresponding lower aggregation levels, by treating a covering set of hours as invalid. |

@@ -126,8 +126,12 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			"--compensate-higher-agg" }, description = "compensate for higher aggregation levels reporting differences that lower levels do not")
 	boolean compensateForHigherAggregations;
 
+	@Option(names = { "-i", "--incremental-mark-stale" }, description = "incrementally mark individual stream results")
+	boolean incrementalMarkStale;
+
 	private final ClientHttpRequestFactory reqFactory;
 	private final ObjectMapper objectMapper;
+	private final ExecutorService resultProcessor;
 
 	private volatile boolean globalStop;
 
@@ -141,6 +145,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 		super();
 		this.reqFactory = reqFactory;
 		this.objectMapper = objectMapper;
+		this.resultProcessor = Executors.newSingleThreadExecutor();
 	}
 
 	@Override
@@ -283,56 +288,73 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 					}
 				}
 
-				SortedSet<LocalDateTimeRange> staleTimeRanges = result.uniqueHourTimeRanges();
-				if (!staleTimeRanges.isEmpty()) {
-					// @formatter:off
-					System.out.print(Ansi.AUTO.string("""
-							%s @|red %d|@ ranges to mark stale
-							""".formatted(
-									  streamIdentMessagePrefix
-									, staleTimeRanges.size()
-								)
-							));
-					// @formatter:on
-
-					for (LocalDateTimeRange staleTimeRange : staleTimeRanges) {
-						URI markStaleUri = RestUtils.markStaleUri(streamIdent, staleTimeRange);
-						if (markStale) {
-							boolean marked = RestUtils.markStale(restClient, streamIdent, staleTimeRange);
-							if (marked) {
-								// @formatter:off
-								System.out.print(Ansi.AUTO.string("""
-										%s Marked range %s - %s as stale (%d hours)
-										""".formatted(
-												  streamIdentMessagePrefix
-												, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.start())
-												, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.end())
-												, HOURS.between(staleTimeRange.start(), staleTimeRange.end())
-											)
-										));
-								// @formatter:on
-							} else {
-								// @formatter:off
-								System.out.print(Ansi.AUTO.string("""
-										%s @|Error|@ marking range %s - %s as stale (%d hours)
-										""".formatted(
-												  streamIdentMessagePrefix
-												, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.start())
-												, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.end())
-												, HOURS.between(staleTimeRange.start(), staleTimeRange.end())
-											)
-										));
-								// @formatter:on
-							}
-						} else {
-							System.out.println(markStaleUri);
-						}
-					}
+				if (!incrementalMarkStale) {
+					handleResultMarkStale(restClient, result, streamIdentMessagePrefix);
 				}
 			}
 		}
 
+		if (incrementalMarkStale) {
+			resultProcessor.shutdown();
+			boolean finished = resultProcessor.awaitTermination(maxWait.toSeconds(), TimeUnit.SECONDS);
+			if (!finished) {
+				System.out.println("Mark stale tasks did not complete within %ds.".formatted(maxWait.toSeconds()));
+				resultProcessor.shutdownNow();
+			}
+		}
+
 		return 0;
+	}
+
+	private void handleResultMarkStale(final RestClient restClient, final DatumStreamValidationResult result,
+			final String streamIdentMessagePrefix) {
+		final NodeAndSource streamIdent = result.nodeAndSource();
+		SortedSet<LocalDateTimeRange> staleTimeRanges = result.uniqueHourTimeRanges();
+		if (!staleTimeRanges.isEmpty()) {
+			// @formatter:off
+			System.out.print(Ansi.AUTO.string("""
+					%s @|red %d|@ ranges to mark stale
+					""".formatted(
+							  streamIdentMessagePrefix
+							, staleTimeRanges.size()
+						)
+					));
+			// @formatter:on
+
+			for (LocalDateTimeRange staleTimeRange : staleTimeRanges) {
+				URI markStaleUri = RestUtils.markStaleUri(streamIdent, staleTimeRange);
+				if (markStale) {
+					boolean marked = RestUtils.markStale(restClient, streamIdent, staleTimeRange);
+					if (marked) {
+						// @formatter:off
+						System.out.print(Ansi.AUTO.string("""
+								%s Marked range %s - %s as stale (%d hours)
+								""".formatted(
+										  streamIdentMessagePrefix
+										, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.start())
+										, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.end())
+										, HOURS.between(staleTimeRange.start(), staleTimeRange.end())
+									)
+								));
+						// @formatter:on
+					} else {
+						// @formatter:off
+						System.out.print(Ansi.AUTO.string("""
+								%s @|Error|@ marking range %s - %s as stale (%d hours)
+								""".formatted(
+										  streamIdentMessagePrefix
+										, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.start())
+										, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.end())
+										, HOURS.between(staleTimeRange.start(), staleTimeRange.end())
+									)
+								));
+						// @formatter:on
+					}
+				} else {
+					System.out.println(markStaleUri);
+				}
+			}
+		}
 	}
 
 	private static String nodeAndSourceMessagePrefix(NodeAndSource nodeAndSource, List<NodeAndSource> allStreams) {
@@ -406,7 +428,13 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			if (verbosity != null) {
 				System.out.println(Ansi.AUTO.string("%s Validation complete".formatted(streamMessagePrefix)));
 			}
-			return new DatumStreamValidationResult(nodeAndSource, zone, results);
+			DatumStreamValidationResult result = new DatumStreamValidationResult(nodeAndSource, zone, results);
+			if (incrementalMarkStale) {
+				resultProcessor.submit(() -> {
+					handleResultMarkStale(restClient, result, streamMessagePrefix);
+				});
+			}
+			return result;
 		}
 
 		private boolean findDifferences(DatumStreamTimeRange range) {

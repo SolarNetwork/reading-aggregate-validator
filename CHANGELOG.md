@@ -11,6 +11,9 @@ Tool.
    `--source-id` values will be included.
  * SolarNetwork HTTP rate-limit errors are now handled by pausing a short amount of time
    before retrying the operation.
+ * Add new `--incremental-mark-stale` option, to mark each stream's invalid time ranges
+   immediately after its validation completes (from finding all ranges or reaching the change
+   limit or running out of time).
 
 ### Other changes
 
