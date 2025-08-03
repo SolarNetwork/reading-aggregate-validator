@@ -131,8 +131,8 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 
 	private final ClientHttpRequestFactory reqFactory;
 	private final ObjectMapper objectMapper;
-	private final ExecutorService resultProcessor;
 
+	private ExecutorService resultProcessor;
 	private volatile boolean globalStop;
 
 	/**
@@ -145,7 +145,6 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 		super();
 		this.reqFactory = reqFactory;
 		this.objectMapper = objectMapper;
-		this.resultProcessor = Executors.newSingleThreadExecutor();
 	}
 
 	@Override
@@ -193,6 +192,11 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 								.map(v -> "@|yellow %s|@".formatted(v)).collect(joining(", "))
 					)));
 			// @formatter:on
+		}
+
+		if (incrementalMarkStale) {
+			this.resultProcessor = (threadCount > 1 ? Executors.newFixedThreadPool(threadCount)
+					: Executors.newSingleThreadExecutor());
 		}
 
 		List<Future<DatumStreamValidationResult>> taskResults = new ArrayList<>();
@@ -288,13 +292,13 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 					}
 				}
 
-				if (!incrementalMarkStale) {
+				if (resultProcessor != null) {
 					handleResultMarkStale(restClient, result, streamIdentMessagePrefix);
 				}
 			}
 		}
 
-		if (incrementalMarkStale) {
+		if (resultProcessor != null) {
 			resultProcessor.shutdown();
 			boolean finished = resultProcessor.awaitTermination(maxWait.toSeconds(), TimeUnit.SECONDS);
 			if (!finished) {
@@ -429,7 +433,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 				System.out.println(Ansi.AUTO.string("%s Validation complete".formatted(streamMessagePrefix)));
 			}
 			DatumStreamValidationResult result = new DatumStreamValidationResult(nodeAndSource, zone, results);
-			if (incrementalMarkStale) {
+			if (resultProcessor != null) {
 				resultProcessor.submit(() -> {
 					handleResultMarkStale(restClient, result, streamMessagePrefix);
 				});
