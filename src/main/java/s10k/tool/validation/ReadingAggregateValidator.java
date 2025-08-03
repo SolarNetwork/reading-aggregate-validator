@@ -214,7 +214,12 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			if (!finished) {
 				System.out.println("Validation tasks did not complete within %ds.".formatted(maxWait.toSeconds()));
 				globalStop = true;
-				threadPool.shutdownNow();
+				try {
+					// sleep for a bit for tasks to pick up globalStop
+					Thread.sleep(2000L);
+				} catch (InterruptedException e) {
+					// continue;
+				}
 			}
 		}
 
