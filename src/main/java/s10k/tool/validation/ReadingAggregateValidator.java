@@ -293,7 +293,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 					}
 				}
 
-				if (incrementalMarkStale) {
+				if (!incrementalMarkStale) {
 					handleResultMarkStale(restClient, result, streamIdentMessagePrefix);
 				}
 			}
