@@ -435,7 +435,8 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			}
 			DatumStreamValidationResult result = new DatumStreamValidationResult(nodeAndSource, zone, results);
 			if (resultProcessor != null) {
-				resultProcessor.submit(() -> {
+				@SuppressWarnings("unused")
+				var unused = resultProcessor.submit(() -> {
 					handleResultMarkStale(restClient, result, streamMessagePrefix);
 				});
 			}
