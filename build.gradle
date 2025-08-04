@@ -20,7 +20,7 @@ apply plugin: 'net.ltgt.errorprone'
 apply plugin: 'org.graalvm.buildtools.native'
 
 description = 'SolarNetwork Reading Aggregate Validator'
-version = '1.0.0'
+version = '1.1.0'
 group = 's10k.tool'
 
 base {
@@ -91,7 +91,7 @@ ext {
 	bucket4jVersion = '8.14.0'
 	commonsIoVersion = '2.20.0'
 	picoCliVersion = '4.7.7'
-	snCommonVersion = '4.0.0'
+	snCommonVersion = '4.2.0'
 	snCommonWebJakartaVersion = '2.0.6'
 	superCsvVersion = '2.4.0'
 	threetenExtraVersion = '1.8.0'

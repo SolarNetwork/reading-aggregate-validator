@@ -6,7 +6,7 @@ are found, the tool generates a detailed report and can even submit "reprocessin
 SolarNetwork, to get the differences eliminated.
 
 Normally there should not be any differences between the raw datum stream data and the cached
-aggregates SolarNetwork automatically maintains. However, over time anomalies can creep in in
+aggregates SolarNetwork automatically maintains. However, over time anomalies can creep in
 inadvertently, making different views on the same data appear to be inconsistent.
 
 <img alt="Screen shot of tool in action" src="docs/img/sn-reading-aggregate-validator-output@2x.png" width="1011">
@@ -44,6 +44,25 @@ to have Java 21+ installed on your system. To execute the JAR, run like this:
 ```sh
 # execute JAR version
 java -jar sn-reading-aggregate-validator-1.0.0.jar [options here]
+```
+
+## Example
+
+The following uses 4 tasks to validate all `/**/GEN/*` datum streams, automatically re-process the
+found differences (up to 500 per stream), and generate a report to a file named
+`sn-invalid-agg-report.csv`. It will wait at most 2 hours for all streams to be validated.
+
+```sh
+sn-reading-aggregate-validator \
+  --token=XXXYYYZZZ \
+  --secret \
+  --property=wattHours \
+  --max-invalid=500 \
+  --max-wait PT2H \
+  --threads=4 \
+  --source-id='/**/GEN/*' \
+  --report-file=sn-invalid-agg-report.csv \
+  --mark-stale
 ```
 
 ## Typical process
@@ -102,9 +121,14 @@ Run the tool with `-h` or `--help` to display all the available options.
 
 ## Datum stream options
 
+You can target any number of datum streams for validation, limited by those that are available
+to the API token you use. You must provide the source IDs of the streams to validate with the
+`--source-id=` option. You can then limit those streams to just those matching specific node IDs
+with the `--node-id=X` option.
+
 | Option | Description |
 |:-------|:------------|
-| `-node N` `--node-id=N` | A node ID to validate, or comma-delimited list of node IDs. |
+| `-node N` `--node-id=N` | An optional node ID to limit validations to, or comma-delimited list of node IDs. |
 | `-source` `--source-id=N` | A source ID to validate, or comma-delimited list of source IDs. Wildcard patterns are allowed. |
 | `-prop N` `--propery=N` | An **accumulating** datum property name to validate, or comma-delimited list of property names. |
 
@@ -112,6 +136,7 @@ Run the tool with `-h` or `--help` to display all the available options.
 
 | Option | Description |
 |:-------|:------------|
+| `-i` `--incremental-mark-stale` | Mark stale (or report) immediately after each stream's validation completes. Otherwise wait for all streams to finish processing before marking them stale. |
 | `-m` `--mark-stale` | Use the `/datum/maint/agg/stale` to mark time ranges with discovered differences as "stale". |
 | `-r N` `--report-file=N` | A file name to generate a CSV report to, of all invalid time ranges discovered. |
 | `--compensate-higher-agg` | Compensate for differences found in higher aggregation levels but not corresponding lower aggregation levels, by treating a covering set of hours as invalid. |
@@ -129,22 +154,59 @@ Run the tool with `-h` or `--help` to display all the available options.
 | `-X N` `--max-invalid=N` | The maximum number of invalid ranges, per stream, to allow before stopping, or `0` for no limit (the default). |
 | `--http-trace` | Log HTTP exchanges. Must also configure the `net.solarnetwork.http.REQ` and/or `net.solarnetwork.http.RES` logger levels to `TRACE`. |
 
-# Native Image development
+# Logging
 
-The `JsonUtils` class uses reflection that the normal build process does not pick up, so running the
-application with the native image agent can be used to generate an appropriate `reflect-config.json`
-file manually.
+Logging can be enabled by creating an `application.yml` file in your working directory. You can then
+configure standard [Spring Boot
+Logging][logging-conf] settings. For example
+if you would like HTTP exchange traces, add the `--http-trace` option and then configure logging
+something like this:
 
-Run an example use case, like this:
+```yaml
+logging:
+  file.name: "/var/tmp/sn-reading-aggregate-validator.log"
+  level:
+    net.solarnetwork.http: "TRACE"
+  threshold:
+    console: "INFO"
+    file: "TRACE"
+```
+
+# Building from source
+
+To build the executable JAR application from source, run:
 
 ```sh
-java -Dspring.aot.enabled=true \
-  -agentlib:native-image-agent=config-output-dir=/tmp -jar build/libs/sn-reading-aggregate-validator-1.0.0.jar \
-  --token=xyz \
-  --secret \
-  --node-id=123 \
-  --source-id='/*/*/*/GEN/*' \
-  --property=wattHours \
-  --max-invalid=20 \
-  --report-file=/var/tmp/sn-invalid-agg-report.csv
+# Unix
+./gradlew build -x test
+
+# Windows
+.\gradlew.bat build -x test
 ```
+
+The application will be built to `build/libs/sn-reading-aggregate-validator-VERSION.jar`.
+
+## Building the native binary
+
+To build the native binary, you must have the [GraalVM][graalvm] version 21+ or later installed.
+Then add `GRAALVM_HOME` to your environment. For example in `sh`:
+
+```sh
+# macOS install
+export GRAALVM_HOME=/Library/Java/JavaVirtualMachines/graalvm-21.jdk/Contents/Home
+```
+
+Then you can run:
+
+```sh
+# Unix
+./gradlew nativeCompile
+
+# Windows
+.\gradlew.bat nativeCompile
+```
+
+The native binary will be built to `build/native/nativeCompile/sn-reading-aggregate-validator`.
+
+[graalvm]: https://www.graalvm.org/
+[logging-conf]: https://docs.spring.io/spring-boot/reference/features/logging.html

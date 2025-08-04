@@ -5,11 +5,11 @@ import static java.math.BigDecimal.ZERO;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.time.temporal.ChronoUnit.DAYS;
 import static java.time.temporal.ChronoUnit.HOURS;
-import static java.util.Arrays.stream;
 import static java.util.stream.Collectors.joining;
 import static net.solarnetwork.domain.datum.Aggregation.Day;
 import static net.solarnetwork.domain.datum.Aggregation.Hour;
 import static net.solarnetwork.util.DateUtils.ISO_DATE_OPT_TIME_ALT_LOCAL;
+import static net.solarnetwork.util.StringNaturalSortComparator.CASE_INSENSITIVE_NATURAL_SORT;
 import static org.supercsv.prefs.CsvPreference.STANDARD_PREFERENCE;
 import static s10k.tool.domain.TimeRangeValidationDifference.differences;
 
@@ -27,8 +27,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.NavigableMap;
 import java.util.SortedSet;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -37,6 +39,7 @@ import java.util.concurrent.TimeUnit;
 
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.HttpClientErrorException.TooManyRequests;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 import org.supercsv.io.CsvListWriter;
@@ -82,7 +85,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 	boolean usageHelpRequested;
 
 	@Option(names = { "-node",
-			"--node-id" }, description = "a node ID to validate", required = true, split = "\\s*,\\s*", splitSynopsisLabel = ",")
+			"--node-id" }, description = "a node ID to validate", split = "\\s*,\\s*", splitSynopsisLabel = ",")
 	Long[] nodeIds;
 
 	@Option(names = { "-source",
@@ -124,9 +127,13 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			"--compensate-higher-agg" }, description = "compensate for higher aggregation levels reporting differences that lower levels do not")
 	boolean compensateForHigherAggregations;
 
+	@Option(names = { "-i", "--incremental-mark-stale" }, description = "incrementally mark individual stream results")
+	boolean incrementalMarkStale;
+
 	private final ClientHttpRequestFactory reqFactory;
 	private final ObjectMapper objectMapper;
 
+	private ExecutorService resultProcessor;
 	private volatile boolean globalStop;
 
 	/**
@@ -143,18 +150,6 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 
 	@Override
 	public Integer call() throws Exception {
-		if (verbosity != null) {
-			// @formatter:off
-			System.out.println(Ansi.AUTO.string("""
-					@|bold Nodes:|@   %s
-					@|bold Sources:|@ %s
-					""".formatted(
-							stream(nodeIds).map(v -> "@|yellow %d|@".formatted(v)).collect(joining(", ")),
-							stream(sourceIds).map(v -> "@|yellow %s|@".formatted(v)).collect(joining(", "))
-					)));
-			// @formatter:on
-		}
-
 		// compute signing key, then throw out the secret
 		final Instant signingDate = Instant.now();
 		final var credProvider = new StaticAuthorizationCredentialsProvider(tokenId,
@@ -186,19 +181,45 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			return 1;
 		}
 
+		if (verbosity != null) {
+			// @formatter:off
+			System.out.println(Ansi.AUTO.string("""
+					@|bold Nodes:|@   %s
+					@|bold Sources:|@ %s
+					""".formatted(
+							streams.stream().map(NodeAndSource::nodeId).distinct().sorted()
+								.map(v -> "@|yellow %d|@".formatted(v)).collect(joining(", ")),
+							streams.stream().map(NodeAndSource::sourceId).distinct().sorted(CASE_INSENSITIVE_NATURAL_SORT)
+								.map(v -> "@|yellow %s|@".formatted(v)).collect(joining(", "))
+					)));
+			// @formatter:on
+		}
+
+		if (incrementalMarkStale) {
+			this.resultProcessor = (threadCount > 1 ? Executors.newFixedThreadPool(threadCount)
+					: Executors.newSingleThreadExecutor());
+		}
+
 		List<Future<DatumStreamValidationResult>> taskResults = new ArrayList<>();
 
 		try (ExecutorService threadPool = (threadCount > 1 ? Executors.newFixedThreadPool(threadCount)
 				: Executors.newSingleThreadExecutor())) {
-			for (NodeAndSource nodeAndSource : streams) {
-				taskResults.add(threadPool.submit(new StreamValidator(restClient, nodeAndSource)));
+			for (NodeAndSource streamIdent : streams) {
+				final String streamIdentMessagePrefix = nodeAndSourceMessagePrefix(streamIdent, streams);
+				taskResults
+						.add(threadPool.submit(new StreamValidator(restClient, streamIdent, streamIdentMessagePrefix)));
 			}
 			threadPool.shutdown();
 			boolean finished = threadPool.awaitTermination(maxWait.toSeconds(), TimeUnit.SECONDS);
 			if (!finished) {
 				System.out.println("Validation tasks did not complete within %ds.".formatted(maxWait.toSeconds()));
 				globalStop = true;
-				threadPool.shutdownNow();
+				try {
+					// sleep for a bit for tasks to pick up globalStop
+					Thread.sleep(2000L);
+				} catch (InterruptedException e) {
+					// continue;
+				}
 			}
 		}
 
@@ -216,9 +237,18 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 				}
 				results.add(result);
 			} catch (ExecutionException e) {
-				System.err.print("Validation task failed: " + e.getCause());
+				Throwable cause = e.getCause();
+				String msg;
+				if (cause instanceof CancellationException) {
+					msg = "cancelled from timeout";
+				} else {
+					msg = cause.toString();
+				}
+				System.err.println("Validation task failed: " + msg);
 			}
 		}
+
+		results.sort(null);
 
 		try (ICsvListWriter csv = new CsvListWriter(
 				differencesFound && reportFileName != null ? new FileWriter(reportFileName, UTF_8) : new NullWriter(),
@@ -227,7 +257,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 
 			for (DatumStreamValidationResult result : results) {
 				final NodeAndSource streamIdent = result.nodeAndSource();
-				final String streamIdentMessagePrefix = nodeAndSourceMessagePrefix(streamIdent);
+				final String streamIdentMessagePrefix = nodeAndSourceMessagePrefix(streamIdent, streams);
 
 				if (!result.hasDifferences()) {
 					System.out.println(Ansi.AUTO
@@ -268,60 +298,90 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 					}
 				}
 
-				SortedSet<LocalDateTimeRange> staleTimeRanges = result.uniqueHourTimeRanges();
-				if (!staleTimeRanges.isEmpty()) {
-					// @formatter:off
-					System.out.println(Ansi.AUTO.string("""
-							%s @|red %d|@ ranges to mark stale
-							""".formatted(
-									  streamIdentMessagePrefix
-									, staleTimeRanges.size()
-								)
-							));
-					// @formatter:on
-
-					for (LocalDateTimeRange staleTimeRange : staleTimeRanges) {
-						URI markStaleUri = RestUtils.markStaleUri(streamIdent, staleTimeRange);
-						if (markStale) {
-							boolean marked = RestUtils.markStale(restClient, streamIdent, staleTimeRange);
-							if (marked) {
-								// @formatter:off
-								System.out.print(Ansi.AUTO.string("""
-										%s Marked range %s - %s as stale (%d hours)
-										""".formatted(
-												  streamIdentMessagePrefix
-												, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.start())
-												, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.end())
-												, HOURS.between(staleTimeRange.start(), staleTimeRange.end())
-											)
-										));
-								// @formatter:on
-							} else {
-								// @formatter:off
-								System.out.print(Ansi.AUTO.string("""
-										%s @|Error|@ marking range %s - %s as stale (%d hours)
-										""".formatted(
-												  streamIdentMessagePrefix
-												, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.start())
-												, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.end())
-												, HOURS.between(staleTimeRange.start(), staleTimeRange.end())
-											)
-										));
-								// @formatter:on
-							}
-						} else {
-							System.out.println(markStaleUri);
-						}
-					}
+				if (!incrementalMarkStale) {
+					handleResultMarkStale(restClient, result, streamIdentMessagePrefix);
 				}
+			}
+		}
+
+		if (resultProcessor != null) {
+			resultProcessor.shutdown();
+			boolean finished = resultProcessor.awaitTermination(maxWait.toSeconds(), TimeUnit.SECONDS);
+			if (!finished) {
+				System.out.println("Mark stale tasks did not complete within %ds.".formatted(maxWait.toSeconds()));
+				resultProcessor.shutdownNow();
 			}
 		}
 
 		return 0;
 	}
 
-	private static String nodeAndSourceMessagePrefix(NodeAndSource nodeAndSource) {
-		return "[@|yellow %6d|@ @|yellow %s|@]".formatted(nodeAndSource.nodeId(), nodeAndSource.sourceId());
+	private void handleResultMarkStale(final RestClient restClient, final DatumStreamValidationResult result,
+			final String streamIdentMessagePrefix) {
+		final NodeAndSource streamIdent = result.nodeAndSource();
+		SortedSet<LocalDateTimeRange> staleTimeRanges = result.uniqueHourTimeRanges();
+		if (!staleTimeRanges.isEmpty()) {
+			// @formatter:off
+			System.out.print(Ansi.AUTO.string("""
+					%s @|red %d|@ ranges to mark stale
+					""".formatted(
+							  streamIdentMessagePrefix
+							, staleTimeRanges.size()
+						)
+					));
+			// @formatter:on
+
+			for (LocalDateTimeRange staleTimeRange : staleTimeRanges) {
+				URI markStaleUri = RestUtils.markStaleUri(streamIdent, staleTimeRange);
+				if (markStale) {
+					boolean marked = RestUtils.markStale(restClient, streamIdent, staleTimeRange);
+					if (marked) {
+						// @formatter:off
+						System.out.print(Ansi.AUTO.string("""
+								%s Marked range %s - %s as stale (%d hours)
+								""".formatted(
+										  streamIdentMessagePrefix
+										, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.start())
+										, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.end())
+										, HOURS.between(staleTimeRange.start(), staleTimeRange.end())
+									)
+								));
+						// @formatter:on
+					} else {
+						// @formatter:off
+						System.out.print(Ansi.AUTO.string("""
+								%s @|Error|@ marking range %s - %s as stale (%d hours)
+								""".formatted(
+										  streamIdentMessagePrefix
+										, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.start())
+										, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.end())
+										, HOURS.between(staleTimeRange.start(), staleTimeRange.end())
+									)
+								));
+						// @formatter:on
+					}
+				} else {
+					System.out.println(markStaleUri);
+				}
+			}
+		}
+	}
+
+	private static String nodeAndSourceMessagePrefix(NodeAndSource nodeAndSource, List<NodeAndSource> allStreams) {
+		int nodeIdWidth = 1;
+		int sourceIdWidth = 1;
+		for (NodeAndSource streamIdent : allStreams) {
+			int w = streamIdent.nodeId().toString().length();
+			if (w > nodeIdWidth) {
+				nodeIdWidth = w;
+			}
+			w = streamIdent.sourceId().length();
+			if (w > sourceIdWidth) {
+				sourceIdWidth = w;
+			}
+		}
+		return ("[@|yellow %" + nodeIdWidth + "d|@ @|yellow %-" + sourceIdWidth + "s|@]")
+				.formatted(nodeAndSource.nodeId(), nodeAndSource.sourceId());
 	}
 
 	private final class StreamValidator implements Callable<DatumStreamValidationResult> {
@@ -336,11 +396,11 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 		private long invalidHours = 0L;
 		private boolean stop;
 
-		private StreamValidator(RestClient restClient, NodeAndSource nodeAndSource) {
+		private StreamValidator(RestClient restClient, NodeAndSource nodeAndSource, String streamMessagePrefix) {
 			super();
 			this.restClient = restClient;
 			this.nodeAndSource = nodeAndSource;
-			this.streamMessagePrefix = nodeAndSourceMessagePrefix(nodeAndSource);
+			this.streamMessagePrefix = streamMessagePrefix;
 		}
 
 		@Override
@@ -352,7 +412,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			final DatumStreamTimeRange range = RestUtils.datumStreamTimeRange(restClient, nodeAndSource,
 					Instant.now().minus(minDaysOffsetFromNow, DAYS).truncatedTo(DAYS));
 			if (range == null) {
-				System.out.println(streamMessagePrefix + " Time range not available");
+				System.out.println(Ansi.AUTO.string(streamMessagePrefix + " Time range not available"));
 				return DatumStreamValidationResult.emptyValidationResult(nodeAndSource, zone);
 			}
 
@@ -378,7 +438,14 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			if (verbosity != null) {
 				System.out.println(Ansi.AUTO.string("%s Validation complete".formatted(streamMessagePrefix)));
 			}
-			return new DatumStreamValidationResult(nodeAndSource, zone, results);
+			DatumStreamValidationResult result = new DatumStreamValidationResult(nodeAndSource, zone, results);
+			if (resultProcessor != null) {
+				@SuppressWarnings("unused")
+				var unused = resultProcessor.submit(() -> {
+					handleResultMarkStale(restClient, result, streamMessagePrefix);
+				});
+			}
+			return result;
 		}
 
 		private boolean findDifferences(DatumStreamTimeRange range) {
@@ -438,12 +505,16 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 				}
 
 				if (rangeHours <= HOURS_PER_DAY) {
-					// reach final hour-level aggregate comparison so iterate over hours
+					// load entire range of hour aggregates in one query
+					final NavigableMap<Instant, Datum> hourAggregates = readingDifferenceAggregates(range);
+
+					// then reach final hour-level aggregate comparison so iterate over hours
 					for (LocalDateTime hour = range.start(); hour.isBefore(range.end()); hour = hour.plusHours(1)) {
 						final DatumStreamTimeRange hourRange = new DatumStreamTimeRange(range.nodeAndSource(),
 								range.zone(), new LocalDateTimeRange(hour, hour.plusHours(1)));
-						final TimeRangeValidationDifference hourDiff = queryDifference(hourRange, Hour, null);
-						if (hourDiff.hasDifferences()) {
+						final TimeRangeValidationDifference hourDiff = queryDifference(hourRange, Hour,
+								hourAggregates.get(hour.atZone(zone).toInstant()));
+						if (hourDiff != null && hourDiff.hasDifferences()) {
 							hourInvalidationsFound = true;
 							if (addInvalidHourShouldStop(hourDiff)) {
 								return true;
@@ -460,7 +531,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 						return hourInvalidationsFound;
 					}
 					boolean result2 = findDifferences(newestToOldest ? leftRange : rightRange);
-					if (compensateForHigherAggregations && !(result1 || result2)) {
+					if (compensateForHigherAggregations && (!stop || globalStop) && !(result1 || result2)) {
 						// hmm, our overall range was different, but both sub-ranges are not;
 						// the higher-level aggregate must be off somewhere, so we need to
 						// recompute one hour within every aggregate in the overall range to try to fix
@@ -551,11 +622,66 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 
 		private TimeRangeValidationDifference queryDifference(DatumStreamTimeRange range, Aggregation aggregation,
 				Aggregation partialAggregation) {
-			final Datum expected = RestUtils.readingDifference(restClient, nodeAndSource, range.start(), range.end(),
-					properties);
-			final Datum rollup = RestUtils.readingDifferenceRollup(restClient, nodeAndSource, range.start(),
-					range.end(), properties, aggregation, partialAggregation);
-			return differences(aggregation, range.timeRange(), expected, rollup, properties);
+			try {
+				final Datum rollup = RestUtils.readingDifferenceRollup(restClient, nodeAndSource, range.start(),
+						range.end(), properties, aggregation, partialAggregation);
+				return queryDifference(range, aggregation, rollup);
+			} catch (TooManyRequests e) {
+				// sleep, and then try again
+				if (!(stop || globalStop)) {
+					try {
+						Thread.sleep(1000L);
+						if (!(stop || globalStop)) {
+							return queryDifference(range, aggregation, partialAggregation);
+						}
+					} catch (InterruptedException e2) {
+						stop = true;
+					}
+				}
+				return null;
+			}
+		}
+
+		private TimeRangeValidationDifference queryDifference(DatumStreamTimeRange range, Aggregation aggregation,
+				Datum rollup) {
+			try {
+				final Datum expected = RestUtils.readingDifference(restClient, nodeAndSource, range.start(),
+						range.end(), properties);
+				return differences(aggregation, range.timeRange(), expected, rollup, properties);
+			} catch (TooManyRequests e) {
+				// sleep, and then try again
+				if (!(stop || globalStop)) {
+					try {
+						Thread.sleep(1000L);
+						if (!(stop || globalStop)) {
+							return queryDifference(range, aggregation, rollup);
+						}
+					} catch (InterruptedException e2) {
+						stop = true;
+					}
+				}
+				return null;
+			}
+		}
+
+		private NavigableMap<Instant, Datum> readingDifferenceAggregates(DatumStreamTimeRange range) {
+			try {
+				return RestUtils.readingDifferenceAggregates(restClient, nodeAndSource, range.start(), range.end(),
+						properties, Hour);
+			} catch (TooManyRequests e) {
+				// sleep, and then try again
+				if (!(stop || globalStop)) {
+					try {
+						Thread.sleep(1000L);
+						if (!(stop || globalStop)) {
+							return readingDifferenceAggregates(range);
+						}
+					} catch (InterruptedException e2) {
+						stop = true;
+					}
+				}
+				return null;
+			}
 		}
 
 	}
