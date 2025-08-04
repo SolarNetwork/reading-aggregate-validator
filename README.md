@@ -154,22 +154,59 @@ with the `--node-id=X` option.
 | `-X N` `--max-invalid=N` | The maximum number of invalid ranges, per stream, to allow before stopping, or `0` for no limit (the default). |
 | `--http-trace` | Log HTTP exchanges. Must also configure the `net.solarnetwork.http.REQ` and/or `net.solarnetwork.http.RES` logger levels to `TRACE`. |
 
-# Native Image development
+# Logging
 
-The `JsonUtils` class uses reflection that the normal build process does not pick up, so running the
-application with the native image agent can be used to generate an appropriate `reflect-config.json`
-file manually.
+Logging can be enabled by creating an `application.yml` file in your working directory. You can then
+configure standard [Spring Boot
+Logging][logging-conf] settings. For example
+if you would like HTTP exchange traces, add the `--http-trace` option and then configure logging
+something like this:
 
-Run an example use case, like this:
+```yaml
+logging:
+  file.name: "/var/tmp/sn-reading-aggregate-validator.log"
+  level:
+    net.solarnetwork.http: "TRACE"
+  threshold:
+    console: "INFO"
+    file: "TRACE"
+```
+
+# Building from source
+
+To build the executable JAR application from source, run:
 
 ```sh
-java -Dspring.aot.enabled=true \
-  -agentlib:native-image-agent=config-output-dir=/tmp -jar build/libs/sn-reading-aggregate-validator-1.0.0.jar \
-  --token=xyz \
-  --secret \
-  --node-id=123 \
-  --source-id='/*/*/*/GEN/*' \
-  --property=wattHours \
-  --max-invalid=20 \
-  --report-file=/var/tmp/sn-invalid-agg-report.csv
+# Unix
+./gradlew build -x test
+
+# Windows
+.\gradlew.bat build -x test
 ```
+
+The application will be built to `build/libs/sn-reading-aggregate-validator-VERSION.jar`.
+
+## Building the native binary
+
+To build the native binary, you must have the [GraalVM][graalvm] version 21+ or later installed.
+Then add `GRAALVM_HOME` to your environment. For example in `sh`:
+
+```sh
+# macOS install
+export GRAALVM_HOME=/Library/Java/JavaVirtualMachines/graalvm-21.jdk/Contents/Home
+```
+
+Then you can run:
+
+```sh
+# Unix
+./gradlew nativeCompile
+
+# Windows
+.\gradlew.bat nativeCompile
+```
+
+The native binary will be built to `build/native/nativeCompile/sn-reading-aggregate-validator`.
+
+[graalvm]: https://www.graalvm.org/
+[logging-conf]: https://docs.spring.io/spring-boot/reference/features/logging.html
