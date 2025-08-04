@@ -46,6 +46,25 @@ to have Java 21+ installed on your system. To execute the JAR, run like this:
 java -jar sn-reading-aggregate-validator-1.0.0.jar [options here]
 ```
 
+## Example
+
+The following uses 4 tasks to validate all `/**/GEN/*` datum streams, automatically re-process the
+found differences (up to 500 per stream), and generate a report to a file named
+`sn-invalid-agg-report.csv`. It will wait at most 2 hours for all streams to be validated.
+
+```sh
+sn-reading-aggregate-validator \
+  --token=XXXYYYZZZ \
+  --secret \
+  --property=wattHours \
+  --max-invalid=500 \
+  --max-wait PT2H \
+  --threads=4 \
+  --source-id='/**/GEN/*' \
+  --report-file=sn-invalid-agg-report.csv \
+  --mark-stale
+```
+
 ## Typical process
 
 Using this tool follows this general process, assuming the `--mark-stale` option is used to 
@@ -102,9 +121,14 @@ Run the tool with `-h` or `--help` to display all the available options.
 
 ## Datum stream options
 
+You can target any number of datum streams for validation, limited by those that are available
+to the API token you use. You must provide the source IDs of the streams to validate with the
+`--source-id=` option. You can then limit those streams to just those matching specific node IDs
+with the `--node-id=X` option.
+
 | Option | Description |
 |:-------|:------------|
-| `-node N` `--node-id=N` | A node ID to validate, or comma-delimited list of node IDs. |
+| `-node N` `--node-id=N` | An optional node ID to limit validations to, or comma-delimited list of node IDs. |
 | `-source` `--source-id=N` | A source ID to validate, or comma-delimited list of source IDs. Wildcard patterns are allowed. |
 | `-prop N` `--propery=N` | An **accumulating** datum property name to validate, or comma-delimited list of property names. |
 
