@@ -1,12 +1,16 @@
 package s10k.tool.domain;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 import java.time.ZoneId;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.SortedSet;
 import java.util.TreeSet;
+
+import org.threeten.extra.Interval;
+
+import s10k.tool.support.IntervalSorter;
 
 /**
  * A single datum stream's validation result.
@@ -54,46 +58,48 @@ public record DatumStreamValidationResult(NodeAndSource nodeAndSource, ZoneId zo
 	 * 
 	 * @return the ordered set of time ranges
 	 */
-	public SortedSet<LocalDateTimeRange> uniqueHourTimeRanges() {
+	public SortedSet<Interval> uniqueHourTimeRanges() {
 		// mapping of start date -> range
-		Map<LocalDateTime, LocalDateTimeRange> forward = new HashMap<>();
+		Map<Instant, Interval> forward = new HashMap<>();
 
 		// mapping of end date -> range
-		Map<LocalDateTime, LocalDateTimeRange> reverse = new HashMap<>();
+		Map<Instant, Interval> reverse = new HashMap<>();
 
 		for (TimeRangeValidationDifference validation : invalidTimeRanges) {
 			if (!validation.isHourRange()) {
 				continue;
 			}
-			LocalDateTimeRange adjacentAfter = forward.remove(validation.range().end());
-			LocalDateTimeRange adjacentBefore = reverse.remove(validation.range().start());
+			Interval adjacentAfter = forward.remove(validation.range().getEnd());
+			Interval adjacentBefore = reverse.remove(validation.range().getStart());
 			if (adjacentAfter != null) {
-				reverse.remove(adjacentAfter.end());
+				reverse.remove(adjacentAfter.getEnd());
 			}
 			if (adjacentBefore != null) {
-				forward.remove(adjacentBefore.start());
+				forward.remove(adjacentBefore.getStart());
 			}
-			LocalDateTimeRange mergedRange = null;
+			Interval mergedRange = null;
 			if (adjacentBefore != null && adjacentAfter != null) {
 				// merge two ranges into one
-				mergedRange = new LocalDateTimeRange(adjacentBefore.start(), adjacentAfter.end());
+				mergedRange = Interval.of(adjacentBefore.getStart(), adjacentAfter.getEnd());
 			} else if (adjacentBefore != null) {
 				// merge before into current
-				mergedRange = new LocalDateTimeRange(adjacentBefore.start(), validation.range().end());
+				mergedRange = Interval.of(adjacentBefore.getStart(), validation.range().getEnd());
 			} else if (adjacentAfter != null) {
 				// mege after into current
-				mergedRange = new LocalDateTimeRange(validation.range().start(), adjacentAfter.end());
+				mergedRange = Interval.of(validation.range().getStart(), adjacentAfter.getEnd());
 			} else {
 				// new range
-				forward.put(validation.range().start(), validation.range());
-				reverse.put(validation.range().end(), validation.range());
+				forward.put(validation.range().getStart(), validation.range());
+				reverse.put(validation.range().getEnd(), validation.range());
 			}
 			if (mergedRange != null) {
-				forward.put(mergedRange.start(), mergedRange);
-				reverse.put(mergedRange.end(), mergedRange);
+				forward.put(mergedRange.getStart(), mergedRange);
+				reverse.put(mergedRange.getEnd(), mergedRange);
 			}
 		}
-		return new TreeSet<>(forward.values());
+		var result = new TreeSet<Interval>(IntervalSorter.INSTANCE);
+		result.addAll(forward.values());
+		return result;
 	}
 
 	/**
@@ -105,7 +111,7 @@ public record DatumStreamValidationResult(NodeAndSource nodeAndSource, ZoneId zo
 		// @formatter:off
 		return invalidTimeRanges.stream()
 				.filter(TimeRangeValidationDifference::isHourRange)
-				.sorted((l, r) -> l.range().compareTo(r.range()))
+				.sorted((l, r) ->  IntervalSorter.INSTANCE.compare(l.range(), r.range()))
 				.toList();
 		// @formatter:on
 	}
