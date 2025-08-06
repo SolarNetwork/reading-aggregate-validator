@@ -572,10 +572,10 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 										%s Difference discovered in range %s - %s (%s; %d days) but not in either half range; invalidating one hour/day
 										""".formatted(
 												  streamMessagePrefix
-												, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.start())
-												, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.end())
+												, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.startLocal())
+												, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.endLocal())
 												, range.zone().getId()
-												, DAYS.between(range.start(), range.end())
+												, DAYS.between(range.startLocal(), range.endLocal())
 											)
 										));
 								// @formatter:on
