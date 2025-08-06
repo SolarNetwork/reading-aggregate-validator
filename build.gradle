@@ -90,7 +90,7 @@ jar.manifest {
 ext {
 	commonsIoVersion = '2.20.0'
 	picoCliVersion = '4.7.7'
-	snCommonVersion = '4.2.0'
+	snCommonVersion = '4.2.1'
 	snCommonWebJakartaVersion = '2.0.6'
 	superCsvVersion = '2.4.0'
 	threetenExtraVersion = '1.8.0'
