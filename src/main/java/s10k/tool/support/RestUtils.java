@@ -33,15 +33,15 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import net.solarnetwork.codec.JsonUtils;
+import net.solarnetwork.domain.datum.AggregateStreamDatum;
 import net.solarnetwork.domain.datum.Aggregation;
 import net.solarnetwork.domain.datum.Datum;
-import net.solarnetwork.domain.datum.DatumProperties;
+import net.solarnetwork.domain.datum.DatumPropertiesStatistics;
 import net.solarnetwork.domain.datum.DatumSamples;
 import net.solarnetwork.domain.datum.DatumSamplesType;
 import net.solarnetwork.domain.datum.GeneralDatum;
 import net.solarnetwork.domain.datum.ObjectDatumStreamDataSet;
 import net.solarnetwork.domain.datum.ObjectDatumStreamMetadata;
-import net.solarnetwork.domain.datum.StreamDatum;
 import net.solarnetwork.web.jakarta.security.AuthorizationCredentialsProvider;
 import net.solarnetwork.web.jakarta.support.AuthorizationV2RequestInterceptor;
 import net.solarnetwork.web.jakarta.support.LoggingHttpRequestInterceptor;
@@ -185,7 +185,7 @@ public final class RestUtils {
 			return null;
 		}
 
-		// round to whole hours
+		// round to whole days
 		startDate = startDate.atZone(zone).truncatedTo(DAYS).toInstant();
 		endDate = endDate.atZone(zone).truncatedTo(DAYS).plusDays(1).toInstant();
 
@@ -197,21 +197,22 @@ public final class RestUtils {
 		return new DatumStreamTimeRange(nodeAndSource, zone, Interval.of(startDate, endDate));
 	}
 
-	private static final ParameterizedTypeReference<ObjectDatumStreamDataSet<StreamDatum>> STREAM_DATUM_SET_TYPEREF = new ParameterizedTypeReference<ObjectDatumStreamDataSet<StreamDatum>>() {
+	private static final ParameterizedTypeReference<ObjectDatumStreamDataSet<AggregateStreamDatum>> STREAM_DATUM_SET_TYPEREF = new ParameterizedTypeReference<ObjectDatumStreamDataSet<AggregateStreamDatum>>() {
 	};
 
-	private static Datum firstDatum(ObjectDatumStreamDataSet<StreamDatum> results, String[] accumulatingProperties) {
-		for (StreamDatum d : results) {
+	private static Datum firstDatum(ObjectDatumStreamDataSet<AggregateStreamDatum> results,
+			String[] accumulatingProperties) {
+		for (AggregateStreamDatum d : results) {
 			ObjectDatumStreamMetadata streamMeta = results.metadataForStreamId(d.getStreamId());
 			return generalDatum(streamMeta, d, accumulatingProperties);
 		}
 		return null;
 	}
 
-	private static NavigableMap<Instant, Datum> allDatum(ObjectDatumStreamDataSet<StreamDatum> results,
+	private static NavigableMap<Instant, Datum> allDatum(ObjectDatumStreamDataSet<AggregateStreamDatum> results,
 			String[] accumulatingProperties) {
 		var result = new TreeMap<Instant, Datum>();
-		for (StreamDatum d : results) {
+		for (AggregateStreamDatum d : results) {
 			ObjectDatumStreamMetadata streamMeta = results.metadataForStreamId(d.getStreamId());
 			Datum datum = generalDatum(streamMeta, d, accumulatingProperties);
 			result.put(d.getTimestamp(), datum);
@@ -219,15 +220,15 @@ public final class RestUtils {
 		return result;
 	}
 
-	private static GeneralDatum generalDatum(ObjectDatumStreamMetadata streamMeta, StreamDatum d,
+	private static GeneralDatum generalDatum(ObjectDatumStreamMetadata streamMeta, AggregateStreamDatum d,
 			String[] accumulatingProperties) {
 		assert streamMeta != null && d != null && accumulatingProperties != null;
-		DatumSamples samples = new DatumSamples();
-		DatumProperties props = d.getProperties();
+		final DatumSamples samples = new DatumSamples();
+		final DatumPropertiesStatistics stats = d.getStatistics();
 		for (String propName : accumulatingProperties) {
-			int propIdx = streamMeta.propertyIndex(DatumSamplesType.Accumulating, propName);
+			final int propIdx = streamMeta.propertyIndex(DatumSamplesType.Accumulating, propName);
 			if (propIdx >= 0) {
-				BigDecimal propVal = props.accumulatingValue(propIdx);
+				BigDecimal propVal = stats.getAccumulatingDifference(propIdx);
 				samples.putAccumulatingSampleValue(propName, propVal);
 			}
 		}
@@ -248,7 +249,7 @@ public final class RestUtils {
 	public static Datum readingDifference(RestClient restClient, NodeAndSource nodeAndSource, Instant startDate,
 			Instant endDate, String[] accumulatingProperties) {
 		// @formatter:off
-		ObjectDatumStreamDataSet<StreamDatum> results = restClient.get()
+		ObjectDatumStreamDataSet<AggregateStreamDatum> results = restClient.get()
 			.uri(b -> {
 				return b.path("/solarquery/api/v1/sec/datum/stream/reading")
 					.queryParam("nodeId", nodeAndSource.nodeId())
@@ -283,7 +284,7 @@ public final class RestUtils {
 	public static Datum readingDifferenceRollup(RestClient restClient, NodeAndSource nodeAndSource, Instant startDate,
 			Instant endDate, String[] accumulatingProperties, Aggregation aggregation, Aggregation partialAggregation) {
 		// @formatter:off
-		ObjectDatumStreamDataSet<StreamDatum> results = restClient.get()
+		ObjectDatumStreamDataSet<AggregateStreamDatum> results = restClient.get()
 			.uri(b -> {
 				b.path("/solarquery/api/v1/sec/datum/stream/reading")
 					.queryParam("nodeId", nodeAndSource.nodeId())
@@ -325,7 +326,7 @@ public final class RestUtils {
 			NodeAndSource nodeAndSource, Instant startDate, Instant endDate, String[] accumulatingProperties,
 			Aggregation aggregation) {
 		// @formatter:off
-		ObjectDatumStreamDataSet<StreamDatum> results = restClient.get()
+		ObjectDatumStreamDataSet<AggregateStreamDatum> results = restClient.get()
 			.uri(b -> {
 				b.path("/solarquery/api/v1/sec/datum/stream/reading")
 					.queryParam("nodeId", nodeAndSource.nodeId())
