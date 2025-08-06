@@ -5,6 +5,14 @@ Tool.
 
 ## [Develop](https://github.com/SolarNetwork/reading-aggregate-validator/tree/develop)
 
+### Fixes
+
+ * Use absolute dates in all API calls, to avoid issues with daylight saving time.
+ * Fix reading comparison to use reading statistics, not calendar properties. This
+   resulted in false-positives when the two measurement styles differed.
+
+## [1.1.0](https://github.com/SolarNetwork/reading-aggregate-validator/tree/1.1.0)
+
 ### New features
 
  * The `--node-id` argument is now optional. If not provided all node IDs that match the given
