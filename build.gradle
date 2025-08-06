@@ -88,7 +88,6 @@ jar.manifest {
 
 
 ext {
-	bucket4jVersion = '8.14.0'
 	commonsIoVersion = '2.20.0'
 	picoCliVersion = '4.7.7'
 	snCommonVersion = '4.2.0'
