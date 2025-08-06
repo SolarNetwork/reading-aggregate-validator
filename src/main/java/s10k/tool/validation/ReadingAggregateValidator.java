@@ -468,7 +468,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 				partialAggregation = Hour;
 			}
 
-			boolean hourInvalidationsFound = false;
+			boolean differencesFound = false;
 
 			final TimeRangeValidationDifference diff = queryDifference(range, aggregation, partialAggregation);
 			if (diff.hasDifferences()) {
@@ -515,7 +515,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 						final TimeRangeValidationDifference hourDiff = queryDifference(hourRange, Hour,
 								hourAggregates.get(hour.atZone(zone).toInstant()));
 						if (hourDiff != null && hourDiff.hasDifferences()) {
-							hourInvalidationsFound = true;
+							differencesFound = true;
 							if (addInvalidHourShouldStop(hourDiff)) {
 								return true;
 							}
@@ -527,10 +527,16 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 					DatumStreamTimeRange leftRange = range.startingDaysRange(rangeDaysHalf);
 					DatumStreamTimeRange rightRange = range.endingDaysRange(rangeDaysHalf);
 					boolean result1 = findDifferences(newestToOldest ? rightRange : leftRange);
+					if (result1) {
+						differencesFound = true;
+					}
 					if (stop || globalStop) {
-						return hourInvalidationsFound;
+						return differencesFound;
 					}
 					boolean result2 = findDifferences(newestToOldest ? leftRange : rightRange);
+					if (result2) {
+						differencesFound = true;
+					}
 					if (compensateForHigherAggregations && (!stop || globalStop) && !(result1 || result2)) {
 						// hmm, our overall range was different, but both sub-ranges are not;
 						// the higher-level aggregate must be off somewhere, so we need to
@@ -550,18 +556,18 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 										));
 								// @formatter:on
 							}
-							for (LocalDateTime hour = range.startLocal().with(TemporalAdjusters.firstDayOfMonth())
-									.plusHours(12); hour.isBefore(range.endLocal()); hour = hour.plusMonths(1)) {
-								final Interval hourRange = Interval.of(hour.atZone(zone).toInstant(),
-										hour.plusHours(1).atZone(zone).toInstant());
+							for (LocalDateTime hour = range.startLocal().with(TemporalAdjusters.firstDayOfMonth()),
+									end = range.endLocal(); hour.isBefore(end); hour = hour.plusMonths(1)) {
+								final Interval hourRange = Interval.of(hour.plusHours(12).atZone(zone).toInstant(),
+										hour.plusHours(13).atZone(zone).toInstant());
 								final Map<String, PropertyValueComparison> syntheticDifferences = new LinkedHashMap<>(
 										properties.length);
 								for (String propertyName : properties) {
 									syntheticDifferences.put(propertyName, new PropertyValueComparison(ZERO, ONE));
 								}
-								hourInvalidationsFound = true;
-								if (addInvalidHourShouldStop(new TimeRangeValidationDifference(aggregation, hourRange,
-										syntheticDifferences))) {
+								differencesFound = true;
+								if (addInvalidHourShouldStop(
+										new TimeRangeValidationDifference(Hour, hourRange, syntheticDifferences))) {
 									return true;
 								}
 							}
@@ -580,18 +586,18 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 										));
 								// @formatter:on
 							}
-							for (LocalDateTime hour = range.startLocal().truncatedTo(DAYS).plusHours(12); hour
-									.isBefore(range.endLocal()); hour = hour.plusDays(1)) {
-								final Interval hourRange = Interval.of(hour.atZone(zone).toInstant(),
-										hour.plusHours(1).atZone(zone).toInstant());
+							for (LocalDateTime hour = range.startLocal().truncatedTo(DAYS), end = range.endLocal(); hour
+									.isBefore(end); hour = hour.plusDays(1)) {
+								final Interval hourRange = Interval.of(hour.plusHours(12).atZone(zone).toInstant(),
+										hour.plusHours(13).atZone(zone).toInstant());
 								final Map<String, PropertyValueComparison> syntheticDifferences = new LinkedHashMap<>(
 										properties.length);
 								for (String propertyName : properties) {
 									syntheticDifferences.put(propertyName, new PropertyValueComparison(ZERO, ONE));
 								}
-								hourInvalidationsFound = true;
-								if (addInvalidHourShouldStop(new TimeRangeValidationDifference(aggregation, hourRange,
-										syntheticDifferences))) {
+								differencesFound = true;
+								if (addInvalidHourShouldStop(
+										new TimeRangeValidationDifference(Hour, hourRange, syntheticDifferences))) {
 									return true;
 								}
 							}
@@ -600,7 +606,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 				}
 			}
 
-			return hourInvalidationsFound;
+			return differencesFound;
 		}
 
 		private boolean addInvalidHourShouldStop(TimeRangeValidationDifference diff) {
