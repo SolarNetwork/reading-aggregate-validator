@@ -20,7 +20,6 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
-import java.time.temporal.TemporalAdjusters;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -540,40 +539,9 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 					if (compensateForHigherAggregations && (!stop || globalStop) && !(result1 || result2)) {
 						// hmm, our overall range was different, but both sub-ranges are not;
 						// the higher-level aggregate must be off somewhere, so we need to
-						// recompute one hour within every aggregate in the overall range to try to fix
-						if (aggregation == Aggregation.Month) {
-							if (verbosity != null) {
-								// @formatter:off
-								System.out.print(Ansi.AUTO.string("""
-										%s Difference discovered in range %s - %s (%s; %d days) but not in either half range; invalidating one day/month
-										""".formatted(
-												  streamMessagePrefix
-												, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.startLocal())
-												, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.endLocal())
-												, range.zone().getId()
-												, DAYS.between(range.startLocal(), range.endLocal())
-											)
-										));
-								// @formatter:on
-							}
-							for (LocalDateTime hour = range.startLocal().with(TemporalAdjusters.firstDayOfMonth()),
-									end = range.endLocal(); hour.isBefore(end); hour = hour.plusMonths(1)) {
-								final Interval hourRange = Interval.of(hour.plusHours(12).atZone(zone).toInstant(),
-										hour.plusHours(13).atZone(zone).toInstant());
-								final Map<String, PropertyValueComparison> syntheticDifferences = new LinkedHashMap<>(
-										properties.length);
-								for (String propertyName : properties) {
-									syntheticDifferences.put(propertyName, new PropertyValueComparison(ZERO, ONE));
-								}
-								differencesFound = true;
-								if (addInvalidHourShouldStop(
-										new TimeRangeValidationDifference(Hour, hourRange, syntheticDifferences))) {
-									return true;
-								}
-							}
-						} else {
-							if (verbosity != null) {
-								// @formatter:off
+						// recompute one hour within every day in the overall range to try to fix
+						if (verbosity != null) {
+							// @formatter:off
 								System.out.print(Ansi.AUTO.string("""
 										%s Difference discovered in range %s - %s (%s; %d days) but not in either half range; invalidating one hour/day
 										""".formatted(
@@ -585,21 +553,20 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 											)
 										));
 								// @formatter:on
+						}
+						for (LocalDateTime hour = range.startLocal().truncatedTo(DAYS), end = range.endLocal(); hour
+								.isBefore(end); hour = hour.plusDays(1)) {
+							final Interval hourRange = Interval.of(hour.plusHours(12).atZone(zone).toInstant(),
+									hour.plusHours(13).atZone(zone).toInstant());
+							final Map<String, PropertyValueComparison> syntheticDifferences = new LinkedHashMap<>(
+									properties.length);
+							for (String propertyName : properties) {
+								syntheticDifferences.put(propertyName, new PropertyValueComparison(ZERO, ONE));
 							}
-							for (LocalDateTime hour = range.startLocal().truncatedTo(DAYS), end = range.endLocal(); hour
-									.isBefore(end); hour = hour.plusDays(1)) {
-								final Interval hourRange = Interval.of(hour.plusHours(12).atZone(zone).toInstant(),
-										hour.plusHours(13).atZone(zone).toInstant());
-								final Map<String, PropertyValueComparison> syntheticDifferences = new LinkedHashMap<>(
-										properties.length);
-								for (String propertyName : properties) {
-									syntheticDifferences.put(propertyName, new PropertyValueComparison(ZERO, ONE));
-								}
-								differencesFound = true;
-								if (addInvalidHourShouldStop(
-										new TimeRangeValidationDifference(Hour, hourRange, syntheticDifferences))) {
-									return true;
-								}
+							differencesFound = true;
+							if (addInvalidHourShouldStop(
+									new TimeRangeValidationDifference(Hour, hourRange, syntheticDifferences))) {
+								return true;
 							}
 						}
 					}
