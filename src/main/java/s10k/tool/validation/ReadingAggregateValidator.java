@@ -9,6 +9,7 @@ import static java.util.stream.Collectors.joining;
 import static net.solarnetwork.domain.datum.Aggregation.Day;
 import static net.solarnetwork.domain.datum.Aggregation.Hour;
 import static net.solarnetwork.util.DateUtils.ISO_DATE_OPT_TIME_ALT_LOCAL;
+import static net.solarnetwork.util.DateUtils.LOCAL_DATE;
 import static net.solarnetwork.util.StringNaturalSortComparator.CASE_INSENSITIVE_NATURAL_SORT;
 import static org.supercsv.prefs.CsvPreference.STANDARD_PREFERENCE;
 import static s10k.tool.domain.TimeRangeValidationDifference.differences;
@@ -423,8 +424,8 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 						%s Stream range discovered: %s - %s (%s; %d days)
 						""".formatted(
 								  streamMessagePrefix
-								, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.startLocal())
-								, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.endLocal())
+								, LOCAL_DATE.format(range.startLocal())
+								, LOCAL_DATE.format(range.endLocal())
 								, range.zone().getId()
 								, DAYS.between(range.start(), range.end())
 							)
@@ -480,8 +481,8 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 								%s Difference discovered in range %s - %s (%s; %d days): %s %s
 								""".formatted(
 										  streamMessagePrefix
-										, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.startLocal())
-										, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.endLocal())
+										, LOCAL_DATE.format(range.startLocal())
+										, LOCAL_DATE.format(range.endLocal())
 										, range.zone().getId()
 										, DAYS.between(range.startLocal(), range.endLocal())
 										, aggregation
@@ -493,8 +494,8 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 								%s Difference discovered in range %s - %s (%s; %d days)
 								""".formatted(
 										  streamMessagePrefix
-										, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.startLocal())
-										, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.endLocal())
+										, LOCAL_DATE.format(range.startLocal())
+										, LOCAL_DATE.format(range.endLocal())
 										, range.zone().getId()
 										, DAYS.between(range.startLocal(), range.endLocal())
 									)
@@ -546,8 +547,8 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 										%s Difference discovered in range %s - %s (%s; %d days) but not in either half range; invalidating one hour/day
 										""".formatted(
 												  streamMessagePrefix
-												, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.startLocal())
-												, ISO_DATE_OPT_TIME_ALT_LOCAL.format(range.endLocal())
+												, LOCAL_DATE.format(range.startLocal())
+												, LOCAL_DATE.format(range.endLocal())
 												, range.zone().getId()
 												, DAYS.between(range.startLocal(), range.endLocal())
 											)
@@ -598,7 +599,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 		private TimeRangeValidationDifference queryDifference(DatumStreamTimeRange range, Aggregation aggregation,
 				Aggregation partialAggregation) {
 			try {
-				final Datum rollup = RestUtils.readingDifferenceRollup(restClient, nodeAndSource, range.start(),
+				final Datum rollup = RestUtils.readingDifferenceRollup(restClient, nodeAndSource, zone, range.start(),
 						range.end(), properties, aggregation, partialAggregation);
 				return queryDifference(range, aggregation, rollup);
 			} catch (TooManyRequests e) {

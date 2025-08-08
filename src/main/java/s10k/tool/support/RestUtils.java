@@ -252,11 +252,11 @@ public final class RestUtils {
 		ObjectDatumStreamDataSet<AggregateStreamDatum> results = restClient.get()
 			.uri(b -> {
 				return b.path("/solarquery/api/v1/sec/datum/stream/reading")
+					.queryParam("readingType", "Difference")
 					.queryParam("nodeId", nodeAndSource.nodeId())
 					.queryParam("sourceId", nodeAndSource.sourceId())
 					.queryParam("startDate", startDate.atOffset(UTC).toLocalDateTime())
 					.queryParam("endDate", endDate.atOffset(UTC).toLocalDateTime())
-					.queryParam("readingType", "Difference")
 					.build();
 			})
 			.accept(MediaType.APPLICATION_JSON)
@@ -273,6 +273,7 @@ public final class RestUtils {
 	 * 
 	 * @param restClient             the REST client to use
 	 * @param nodeAndSource          the datum stream identifier
+	 * @param zone                   the time zone
 	 * @param startDate              the start date
 	 * @param endDate                the end date
 	 * @param accumulatingProperties the accumulating properties to extract
@@ -281,17 +282,18 @@ public final class RestUtils {
 	 * @return the range, or {@code null} if not available
 	 * @throws RestClientException if the request fails
 	 */
-	public static Datum readingDifferenceRollup(RestClient restClient, NodeAndSource nodeAndSource, Instant startDate,
-			Instant endDate, String[] accumulatingProperties, Aggregation aggregation, Aggregation partialAggregation) {
+	public static Datum readingDifferenceRollup(RestClient restClient, NodeAndSource nodeAndSource, ZoneId zone,
+			Instant startDate, Instant endDate, String[] accumulatingProperties, Aggregation aggregation,
+			Aggregation partialAggregation) {
 		// @formatter:off
 		ObjectDatumStreamDataSet<AggregateStreamDatum> results = restClient.get()
 			.uri(b -> {
 				b.path("/solarquery/api/v1/sec/datum/stream/reading")
+					.queryParam("readingType", "Difference")
 					.queryParam("nodeId", nodeAndSource.nodeId())
 					.queryParam("sourceId", nodeAndSource.sourceId())
-					.queryParam("startDate", startDate.atOffset(UTC).toLocalDateTime())
-					.queryParam("endDate", endDate.atOffset(UTC).toLocalDateTime())
-					.queryParam("readingType", "Difference")
+					.queryParam("localStartDate", startDate.atZone(zone).toLocalDate())
+					.queryParam("localEndDate", endDate.atZone(zone).toLocalDate())
 					.queryParam("aggregation", aggregation)
 					;
 				if (ChronoUnit.HOURS.between(startDate, endDate) > 1) {
@@ -329,11 +331,11 @@ public final class RestUtils {
 		ObjectDatumStreamDataSet<AggregateStreamDatum> results = restClient.get()
 			.uri(b -> {
 				b.path("/solarquery/api/v1/sec/datum/stream/reading")
+					.queryParam("readingType", "Difference")
 					.queryParam("nodeId", nodeAndSource.nodeId())
 					.queryParam("sourceId", nodeAndSource.sourceId())
 					.queryParam("startDate", startDate.atOffset(UTC).toLocalDateTime())
 					.queryParam("endDate", endDate.atOffset(UTC).toLocalDateTime())
-					.queryParam("readingType", "Difference")
 					.queryParam("aggregation", aggregation)
 					;
 				return b.build();
