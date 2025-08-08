@@ -557,8 +557,19 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 						}
 						for (LocalDateTime hour = range.startLocal().truncatedTo(DAYS), end = range.endLocal(); hour
 								.isBefore(end); hour = hour.plusDays(1)) {
-							final Interval hourRange = Interval.of(hour.plusHours(12).atZone(zone).toInstant(),
-									hour.plusHours(13).atZone(zone).toInstant());
+							// find first available hour agg on given day, then re-process that (so we
+							// submit an hour with actual data)
+							final NavigableMap<Instant, Datum> hourAggsInDay = RestUtils.readingDifferenceAggregates(
+									restClient, nodeAndSource, hour.atZone(zone).toInstant(),
+									hour.plusDays(1).atZone(zone).toInstant(), properties, Hour);
+
+							if (hourAggsInDay.isEmpty()) {
+								continue;
+							}
+
+							final Instant firstHourInDay = hourAggsInDay.firstKey();
+
+							final Interval hourRange = Interval.of(firstHourInDay, firstHourInDay.plus(1, HOURS));
 							final Map<String, PropertyValueComparison> syntheticDifferences = new LinkedHashMap<>(
 									properties.length);
 							for (String propertyName : properties) {
