@@ -178,12 +178,12 @@ public final class RestUtils {
 			.path("data")
 			;		
 		// @formatter:on
+		if (!(range.hasNonNull("startDateMillis") && range.hasNonNull("endDateMillis"))) {
+			return null;
+		}
 		ZoneId zone = (range.hasNonNull("timeZone") ? ZoneId.of(range.get("timeZone").textValue()) : ZoneOffset.UTC);
 		Instant startDate = Instant.ofEpochMilli(JsonUtils.parseLongAttribute(range, "startDateMillis"));
 		Instant endDate = Instant.ofEpochMilli(JsonUtils.parseLongAttribute(range, "endDateMillis"));
-		if (startDate == null || endDate == null) {
-			return null;
-		}
 
 		// round to whole days
 		startDate = startDate.atZone(zone).truncatedTo(DAYS).toInstant();
