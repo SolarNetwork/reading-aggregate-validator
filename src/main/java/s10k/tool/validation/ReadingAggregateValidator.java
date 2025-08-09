@@ -112,8 +112,8 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 	char[] tokenSecret;
 
 	@Option(names = { "-o",
-			"--min-days-offset" }, description = "minimum number of days offset from today to disallow validation", defaultValue = "1")
-	int minDaysOffsetFromNow = 1;
+			"--min-days-offset" }, description = "minimum number of days offset from today to disallow validation", defaultValue = "5")
+	int minDaysOffsetFromNow = 5;
 
 	@Option(names = { "-m", "--mark-stale" }, description = "mark the invalid time ranges as stale in SolarNetwork")
 	boolean markStale;
