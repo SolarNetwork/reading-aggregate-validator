@@ -8,11 +8,16 @@ import static java.time.temporal.ChronoUnit.HOURS;
 import static java.util.stream.Collectors.joining;
 import static net.solarnetwork.domain.datum.Aggregation.Day;
 import static net.solarnetwork.domain.datum.Aggregation.Hour;
+import static net.solarnetwork.domain.datum.Aggregation.Month;
 import static net.solarnetwork.util.DateUtils.ISO_DATE_OPT_TIME_ALT_LOCAL;
 import static net.solarnetwork.util.DateUtils.LOCAL_DATE;
 import static net.solarnetwork.util.StringNaturalSortComparator.CASE_INSENSITIVE_NATURAL_SORT;
 import static org.supercsv.prefs.CsvPreference.STANDARD_PREFERENCE;
 import static s10k.tool.domain.TimeRangeValidationDifference.differences;
+import static s10k.tool.domain.ValidationState.Completed;
+import static s10k.tool.domain.ValidationState.Incomplete;
+import static s10k.tool.domain.ValidationState.NotPerformed;
+import static s10k.tool.domain.ValidationState.Processing;
 
 import java.io.FileWriter;
 import java.net.URI;
@@ -36,6 +41,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
@@ -61,6 +67,7 @@ import s10k.tool.domain.DatumStreamValidationResult;
 import s10k.tool.domain.NodeAndSource;
 import s10k.tool.domain.PropertyValueComparison;
 import s10k.tool.domain.TimeRangeValidationDifference;
+import s10k.tool.domain.ValidationState;
 import s10k.tool.support.RestUtils;
 
 /**
@@ -257,9 +264,18 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 				final NodeAndSource streamIdent = result.nodeAndSource();
 				final String streamIdentMessagePrefix = nodeAndSourceMessagePrefix(streamIdent, streams);
 
-				if (!result.hasDifferences()) {
-					System.out.println(Ansi.AUTO
-							.string("%s @|green No validation problems found|@".formatted(streamIdentMessagePrefix)));
+				if (result.validationState() == ValidationState.NotPerformed) {
+					System.out.println(
+							Ansi.AUTO.string("%s Validation not performed".formatted(streamIdentMessagePrefix)));
+					continue;
+				} else if (!result.hasDifferences()) {
+					if (result.validationState() == ValidationState.Completed) {
+						System.out.println(Ansi.AUTO.string(
+								"%s @|green No validation problems found|@".formatted(streamIdentMessagePrefix)));
+					} else {
+						System.out.println(Ansi.AUTO.string("%s No validation problems found (not completely processed)"
+								.formatted(streamIdentMessagePrefix)));
+					}
 					continue;
 				}
 
@@ -390,6 +406,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 		private final NodeAndSource nodeAndSource;
 		private final String streamMessagePrefix;
 
+		private final AtomicReference<ValidationState> state = new AtomicReference<>(NotPerformed);
 		private final List<TimeRangeValidationDifference> results = new ArrayList<>();
 
 		private ZoneId zone = ZoneOffset.UTC;
@@ -405,6 +422,23 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 
 		@Override
 		public DatumStreamValidationResult call() throws Exception {
+			final DatumStreamValidationResult result = new DatumStreamValidationResult(nodeAndSource, zone, state,
+					results);
+			if (!(stop || globalStop)) {
+				result.state().set(Processing);
+				executeValidation();
+				result.state().compareAndSet(Processing, Completed);
+			}
+			if (resultProcessor != null) {
+				@SuppressWarnings("unused")
+				var unused = resultProcessor.submit(() -> {
+					handleResultMarkStale(restClient, result, streamMessagePrefix);
+				});
+			}
+			return result;
+		}
+
+		private void executeValidation() {
 			if (verbosity != null) {
 				System.out.println(Ansi.AUTO.string(streamMessagePrefix + " Validation starting"));
 			}
@@ -413,7 +447,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 					Instant.now().minus(minDaysOffsetFromNow, DAYS).truncatedTo(DAYS));
 			if (range == null) {
 				System.out.println(Ansi.AUTO.string(streamMessagePrefix + " Time range not available"));
-				return DatumStreamValidationResult.emptyValidationResult(nodeAndSource, zone);
+				return;
 			}
 
 			zone = range.zone();
@@ -438,18 +472,11 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			if (verbosity != null) {
 				System.out.println(Ansi.AUTO.string("%s Validation complete".formatted(streamMessagePrefix)));
 			}
-			DatumStreamValidationResult result = new DatumStreamValidationResult(nodeAndSource, zone, results);
-			if (resultProcessor != null) {
-				@SuppressWarnings("unused")
-				var unused = resultProcessor.submit(() -> {
-					handleResultMarkStale(restClient, result, streamMessagePrefix);
-				});
-			}
-			return result;
 		}
 
 		private boolean findDifferences(DatumStreamTimeRange range) {
 			if (stop || globalStop) {
+				state.set(Incomplete);
 				return false;
 			}
 			final long rangeDays = range.dayCount();
@@ -461,8 +488,8 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			final Aggregation aggregation;
 			final Aggregation partialAggregation;
 			if (rangeMonths > 1) {
-				aggregation = Aggregation.Month;
-				partialAggregation = Aggregation.Day;
+				aggregation = Month;
+				partialAggregation = Day;
 			} else {
 				aggregation = Day;
 				partialAggregation = Hour;
@@ -531,13 +558,18 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 						differencesFound = true;
 					}
 					if (stop || globalStop) {
+						state.set(Incomplete);
 						return differencesFound;
 					}
 					boolean result2 = findDifferences(newestToOldest ? leftRange : rightRange);
 					if (result2) {
 						differencesFound = true;
 					}
-					if (compensateForHigherAggregations && (!stop || globalStop) && !(result1 || result2)) {
+					if (stop || globalStop) {
+						state.set(Incomplete);
+						return differencesFound;
+					}
+					if (compensateForHigherAggregations && !(result1 || result2)) {
 						// hmm, our overall range was different, but both sub-ranges are not;
 						// the higher-level aggregate must be off somewhere, so we need to
 						// recompute one hour within every day in the overall range to try to fix
@@ -559,9 +591,9 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 								.isBefore(end); hour = hour.plusDays(1)) {
 							// find first available hour agg on given day, then re-process that (so we
 							// submit an hour with actual data)
-							final NavigableMap<Instant, Datum> hourAggsInDay = RestUtils.readingDifferenceAggregates(
-									restClient, nodeAndSource, hour.atZone(zone).toInstant(),
-									hour.plusDays(1).atZone(zone).toInstant(), properties, Hour);
+							final NavigableMap<Instant, Datum> hourAggsInDay = readingDifferenceAggregates(
+									new DatumStreamTimeRange(nodeAndSource, zone, Interval.of(
+											hour.atZone(zone).toInstant(), hour.plusDays(1).atZone(zone).toInstant())));
 
 							if (hourAggsInDay.isEmpty()) {
 								continue;
@@ -593,6 +625,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			invalidHours++;
 			if (maxStreamInvalid > 0 && !(invalidHours < maxStreamInvalid)) {
 				stop = true;
+				state.set(Incomplete);
 				// @formatter:off
 				System.out.print(Ansi.AUTO.string("""
 						%s Maximum invalid hours (%d) reached: ending search
@@ -610,8 +643,8 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 		private TimeRangeValidationDifference queryDifference(DatumStreamTimeRange range, Aggregation aggregation,
 				Aggregation partialAggregation) {
 			try {
-				final Datum rollup = RestUtils.readingDifferenceRollup(restClient, nodeAndSource, zone, range.start(),
-						range.end(), properties, aggregation, partialAggregation);
+				final Datum rollup = RestUtils.readingDifferenceRollup(restClient, range.nodeAndSource(), range.zone(),
+						range.start(), range.end(), properties, aggregation, partialAggregation);
 				return queryDifference(range, aggregation, rollup);
 			} catch (TooManyRequests e) {
 				// sleep, and then try again
@@ -632,7 +665,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 		private TimeRangeValidationDifference queryDifference(DatumStreamTimeRange range, Aggregation aggregation,
 				Datum rollup) {
 			try {
-				final Datum expected = RestUtils.readingDifference(restClient, nodeAndSource, range.start(),
+				final Datum expected = RestUtils.readingDifference(restClient, range.nodeAndSource(), range.start(),
 						range.end(), properties);
 				return differences(aggregation, range.timeRange(), expected, rollup, properties);
 			} catch (TooManyRequests e) {
@@ -653,8 +686,8 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 
 		private NavigableMap<Instant, Datum> readingDifferenceAggregates(DatumStreamTimeRange range) {
 			try {
-				return RestUtils.readingDifferenceAggregates(restClient, nodeAndSource, range.start(), range.end(),
-						properties, Hour);
+				return RestUtils.readingDifferenceAggregates(restClient, range.nodeAndSource(), range.start(),
+						range.end(), properties, Hour);
 			} catch (TooManyRequests e) {
 				// sleep, and then try again
 				if (!(stop || globalStop)) {

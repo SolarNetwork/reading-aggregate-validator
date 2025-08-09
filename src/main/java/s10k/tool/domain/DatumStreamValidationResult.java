@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.SortedSet;
 import java.util.TreeSet;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.threeten.extra.Interval;
 
@@ -17,25 +18,38 @@ import s10k.tool.support.IntervalSorter;
  * 
  * @param nodeAndSource     the stream identifier
  * @param zone              the stream time zone
+ * @param state             the validation execution state
  * @param invalidTimeRanges list of time ranges with discovered differences
  */
 public record DatumStreamValidationResult(NodeAndSource nodeAndSource, ZoneId zone,
-		List<TimeRangeValidationDifference> invalidTimeRanges) implements Comparable<DatumStreamValidationResult> {
+		AtomicReference<ValidationState> state, List<TimeRangeValidationDifference> invalidTimeRanges)
+		implements Comparable<DatumStreamValidationResult> {
 
 	/**
 	 * Create an empty validation result.
 	 * 
 	 * @param nodeAndSource the datum stream identifier
 	 * @param zone          the datum stream time zone
+	 * @param state         the validation execution state
 	 * @return the new instance
 	 */
-	public static DatumStreamValidationResult emptyValidationResult(NodeAndSource nodeAndSource, ZoneId zone) {
-		return new DatumStreamValidationResult(nodeAndSource, zone, List.of());
+	public static DatumStreamValidationResult emptyValidationResult(NodeAndSource nodeAndSource, ZoneId zone,
+			AtomicReference<ValidationState> state) {
+		return new DatumStreamValidationResult(nodeAndSource, zone, state, List.of());
 	}
 
 	@Override
 	public int compareTo(DatumStreamValidationResult o) {
 		return nodeAndSource.compareTo(o.nodeAndSource);
+	}
+
+	/**
+	 * Get the validation state.
+	 * 
+	 * @return the state
+	 */
+	public ValidationState validationState() {
+		return state.get();
 	}
 
 	/**

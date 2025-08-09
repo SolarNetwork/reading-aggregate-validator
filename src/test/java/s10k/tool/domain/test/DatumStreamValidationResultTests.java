@@ -35,7 +35,7 @@ public class DatumStreamValidationResultTests {
 	}
 
 	private DatumStreamValidationResult result(List<TimeRangeValidationDifference> diffs) {
-		return new DatumStreamValidationResult(null, null, diffs);
+		return new DatumStreamValidationResult(null, null, null, diffs);
 	}
 
 	@Test
