@@ -158,19 +158,27 @@ public final class RestUtils {
 	 * 
 	 * @param restClient    the REST client to use
 	 * @param nodeAndSource the datum stream identifier
-	 * @param maxDate       the maximum allowed end date value
+	 * @param minDate       an optional minimum allowed starting date value
+	 * @param maxDate       an optional maximum allowed end date value
 	 * @return the range, or {@code null} if not available
 	 * @throws RestClientException if the request fails
 	 */
 	public static DatumStreamTimeRange datumStreamTimeRange(RestClient restClient, NodeAndSource nodeAndSource,
-			Instant maxDate) {
+			Instant minDate, Instant maxDate) {
 		// @formatter:off
 		JsonNode range = restClient.get()
 			.uri(b -> {
-				return b.path("/solarquery/api/v1/sec/range/interval")
+				b.path("/solarquery/api/v1/sec/range/interval")
 					.queryParam("nodeId", nodeAndSource.nodeId())
 					.queryParam("sourceId", nodeAndSource.sourceId())
-					.build();
+					;
+				if (minDate != null) {
+					b.queryParam("startDate", minDate.atOffset(UTC).toLocalDateTime());
+				}
+				if (maxDate != null) {
+					b.queryParam("endDate", maxDate.atOffset(UTC).toLocalDateTime());
+				}
+				return b.build();
 			})
 			.accept(MediaType.APPLICATION_JSON)
 			.retrieve()
@@ -188,11 +196,6 @@ public final class RestUtils {
 		// round to whole days
 		startDate = startDate.atZone(zone).truncatedTo(DAYS).toInstant();
 		endDate = endDate.atZone(zone).truncatedTo(DAYS).plusDays(1).toInstant();
-
-		// enforce max date
-		if (endDate.isAfter(maxDate)) {
-			endDate = maxDate.atZone(zone).truncatedTo(DAYS).toInstant();
-		}
 
 		return new DatumStreamTimeRange(nodeAndSource, zone, Interval.of(startDate, endDate));
 	}
