@@ -135,6 +135,8 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 	@Option(names = { "-i", "--incremental-mark-stale" }, description = "incrementally mark individual stream results")
 	boolean incrementalMarkStale;
 
+	private static final Duration HALF_YEAR = Duration.ofDays(183);
+
 	private final ClientHttpRequestFactory reqFactory;
 	private final ObjectMapper objectMapper;
 
@@ -642,13 +644,22 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 		private DatumStreamTimeRange startingHalfRange(DatumStreamTimeRange range, long rangeDaysHalf) {
 			DatumStreamTimeRange halfRange = range.startingDaysRange(rangeDaysHalf);
 			DatumStreamTimeRange availRange = datumStreamTimeRange(halfRange.start(), halfRange.end());
-			return availRange;
+			if (availRange != null && Duration.between(availRange.end(), halfRange.end()).compareTo(HALF_YEAR) >= 0) {
+				// the split is within a large data gap, so use the available range instead
+				return availRange;
+			}
+			return halfRange;
 		}
 
 		private DatumStreamTimeRange endingHalfRange(DatumStreamTimeRange range, long rangeDaysHalf) {
 			DatumStreamTimeRange halfRange = range.endingDaysRange(rangeDaysHalf);
 			DatumStreamTimeRange availRange = datumStreamTimeRange(halfRange.start(), halfRange.end());
-			return availRange;
+			if (availRange != null
+					&& Duration.between(halfRange.start(), availRange.start()).compareTo(HALF_YEAR) >= 0) {
+				// the split is within a large data gap, so use the available range instead
+				return availRange;
+			}
+			return halfRange;
 		}
 
 		private boolean addInvalidHourShouldStop(TimeRangeValidationDifference diff) {
