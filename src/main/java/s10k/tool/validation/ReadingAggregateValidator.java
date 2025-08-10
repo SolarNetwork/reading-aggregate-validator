@@ -42,6 +42,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
@@ -682,16 +683,16 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			return false;
 		}
 
-		private DatumStreamTimeRange datumStreamTimeRange(Instant minDate, Instant maxDate) {
+		private <T> T restOp(Supplier<T> provider) {
 			try {
-				return RestUtils.datumStreamTimeRange(restClient, nodeAndSource, minDate, maxDate);
+				return provider.get();
 			} catch (TooManyRequests e) {
 				// sleep, and then try again
 				if (!(stop || globalStop)) {
 					try {
 						Thread.sleep(1000L);
 						if (!(stop || globalStop)) {
-							return datumStreamTimeRange(minDate, maxDate);
+							return restOp(provider);
 						}
 					} catch (InterruptedException e2) {
 						stop = true;
@@ -699,70 +700,33 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 				}
 				return null;
 			}
+		}
+
+		private DatumStreamTimeRange datumStreamTimeRange(Instant minDate, Instant maxDate) {
+			return restOp(() -> RestUtils.datumStreamTimeRange(restClient, nodeAndSource, minDate, maxDate));
 		}
 
 		private TimeRangeValidationDifference queryDifference(DatumStreamTimeRange range, Aggregation aggregation,
 				Aggregation partialAggregation) {
-			try {
+			return restOp(() -> {
 				final Datum rollup = RestUtils.readingDifferenceRollup(restClient, range.nodeAndSource(), range.zone(),
 						range.start(), range.end(), properties, aggregation, partialAggregation);
 				return queryDifference(range, aggregation, rollup);
-			} catch (TooManyRequests e) {
-				// sleep, and then try again
-				if (!(stop || globalStop)) {
-					try {
-						Thread.sleep(1000L);
-						if (!(stop || globalStop)) {
-							return queryDifference(range, aggregation, partialAggregation);
-						}
-					} catch (InterruptedException e2) {
-						stop = true;
-					}
-				}
-				return null;
-			}
+			});
 		}
 
 		private TimeRangeValidationDifference queryDifference(DatumStreamTimeRange range, Aggregation aggregation,
 				Datum rollup) {
-			try {
+			return restOp(() -> {
 				final Datum expected = RestUtils.readingDifference(restClient, range.nodeAndSource(), range.start(),
 						range.end(), properties);
 				return differences(aggregation, range.timeRange(), expected, rollup, properties);
-			} catch (TooManyRequests e) {
-				// sleep, and then try again
-				if (!(stop || globalStop)) {
-					try {
-						Thread.sleep(1000L);
-						if (!(stop || globalStop)) {
-							return queryDifference(range, aggregation, rollup);
-						}
-					} catch (InterruptedException e2) {
-						stop = true;
-					}
-				}
-				return null;
-			}
+			});
 		}
 
 		private NavigableMap<Instant, Datum> readingDifferenceAggregates(DatumStreamTimeRange range) {
-			try {
-				return RestUtils.readingDifferenceAggregates(restClient, range.nodeAndSource(), range.start(),
-						range.end(), properties, Hour);
-			} catch (TooManyRequests e) {
-				// sleep, and then try again
-				if (!(stop || globalStop)) {
-					try {
-						Thread.sleep(1000L);
-						if (!(stop || globalStop)) {
-							return readingDifferenceAggregates(range);
-						}
-					} catch (InterruptedException e2) {
-						stop = true;
-					}
-				}
-				return null;
-			}
+			return restOp(() -> RestUtils.readingDifferenceAggregates(restClient, range.nodeAndSource(), range.start(),
+					range.end(), properties, Hour));
 		}
 
 	}
