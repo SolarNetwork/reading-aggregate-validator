@@ -1,5 +1,6 @@
 package s10k.tool.domain.test;
 
+import static java.time.ZoneOffset.UTC;
 import static org.assertj.core.api.BDDAssertions.then;
 
 import java.time.LocalDateTime;
@@ -7,9 +8,9 @@ import java.util.List;
 import java.util.SortedSet;
 
 import org.junit.jupiter.api.Test;
+import org.threeten.extra.Interval;
 
 import s10k.tool.domain.DatumStreamValidationResult;
-import s10k.tool.domain.LocalDateTimeRange;
 import s10k.tool.domain.TimeRangeValidationDifference;
 
 /**
@@ -29,11 +30,12 @@ public class DatumStreamValidationResultTests {
 	}
 
 	private TimeRangeValidationDifference val(LocalDateTime start, LocalDateTime end) {
-		return new TimeRangeValidationDifference(null, new LocalDateTimeRange(start, end), null);
+		return new TimeRangeValidationDifference(null,
+				Interval.of(start.atOffset(UTC).toInstant(), end.atOffset(UTC).toInstant()), null);
 	}
 
 	private DatumStreamValidationResult result(List<TimeRangeValidationDifference> diffs) {
-		return new DatumStreamValidationResult(null, null, diffs);
+		return new DatumStreamValidationResult(null, null, null, diffs);
 	}
 
 	@Test
@@ -51,7 +53,7 @@ public class DatumStreamValidationResultTests {
 		DatumStreamValidationResult validation = result(validations);
 
 		// WHEN
-		SortedSet<LocalDateTimeRange> result = validation.uniqueHourTimeRanges();
+		SortedSet<Interval> result = validation.uniqueHourTimeRanges();
 
 		// THEN
 		// @formatter:off
@@ -82,7 +84,7 @@ public class DatumStreamValidationResultTests {
 		DatumStreamValidationResult validation = result(validations);
 
 		// WHEN
-		SortedSet<LocalDateTimeRange> result = validation.uniqueHourTimeRanges();
+		SortedSet<Interval> result = validation.uniqueHourTimeRanges();
 
 		// THEN
 		// @formatter:off
@@ -113,15 +115,15 @@ public class DatumStreamValidationResultTests {
 		DatumStreamValidationResult validation = result(validations);
 
 		// WHEN
-		SortedSet<LocalDateTimeRange> result = validation.uniqueHourTimeRanges();
+		SortedSet<Interval> result = validation.uniqueHourTimeRanges();
 
 		// THEN
 		// @formatter:off
 		then(result)
 			.as("Adjacent hours merged")
 			.containsExactly(
-					  new LocalDateTimeRange(validations.get(2).range().start(), validations.get(4).range().end())
-					, new LocalDateTimeRange(validations.get(3).range().start(), validations.get(1).range().end())
+					  Interval.of(validations.get(2).range().getStart(), validations.get(4).range().getEnd())
+					, Interval.of(validations.get(3).range().getStart(), validations.get(1).range().getEnd())
 			)
 			;
 		// @formatter:off
@@ -142,14 +144,14 @@ public class DatumStreamValidationResultTests {
 		DatumStreamValidationResult validation = result(validations);
 
 		// WHEN
-		SortedSet<LocalDateTimeRange> result = validation.uniqueHourTimeRanges();
+		SortedSet<Interval> result = validation.uniqueHourTimeRanges();
 
 		// THEN
 		// @formatter:off
 		then(result)
 			.as("Adjacent hours merged with gap filled")
 			.containsExactly(
-					  new LocalDateTimeRange(validations.get(2).range().start(), validations.get(4).range().end())
+					Interval.of(validations.get(2).range().getStart(), validations.get(4).range().getEnd())
 			)
 			;
 		// @formatter:off

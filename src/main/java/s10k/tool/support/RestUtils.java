@@ -1,15 +1,13 @@
 package s10k.tool.support;
 
+import static java.time.ZoneOffset.UTC;
 import static java.time.temporal.ChronoUnit.DAYS;
 import static java.util.Arrays.stream;
 import static java.util.stream.Collectors.joining;
-import static net.solarnetwork.codec.JsonUtils.parseDateAttribute;
-import static net.solarnetwork.util.DateUtils.ISO_DATE_OPT_TIME_ALT_LOCAL;
 
 import java.math.BigDecimal;
 import java.net.URI;
 import java.time.Instant;
-import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
@@ -29,24 +27,25 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
+import org.threeten.extra.Interval;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import net.solarnetwork.codec.JsonUtils;
+import net.solarnetwork.domain.datum.AggregateStreamDatum;
 import net.solarnetwork.domain.datum.Aggregation;
 import net.solarnetwork.domain.datum.Datum;
-import net.solarnetwork.domain.datum.DatumProperties;
+import net.solarnetwork.domain.datum.DatumPropertiesStatistics;
 import net.solarnetwork.domain.datum.DatumSamples;
 import net.solarnetwork.domain.datum.DatumSamplesType;
 import net.solarnetwork.domain.datum.GeneralDatum;
 import net.solarnetwork.domain.datum.ObjectDatumStreamDataSet;
 import net.solarnetwork.domain.datum.ObjectDatumStreamMetadata;
-import net.solarnetwork.domain.datum.StreamDatum;
 import net.solarnetwork.web.jakarta.security.AuthorizationCredentialsProvider;
 import net.solarnetwork.web.jakarta.support.AuthorizationV2RequestInterceptor;
 import net.solarnetwork.web.jakarta.support.LoggingHttpRequestInterceptor;
 import s10k.tool.domain.DatumStreamTimeRange;
-import s10k.tool.domain.LocalDateTimeRange;
 import s10k.tool.domain.NodeAndSource;
 
 /**
@@ -159,19 +158,27 @@ public final class RestUtils {
 	 * 
 	 * @param restClient    the REST client to use
 	 * @param nodeAndSource the datum stream identifier
-	 * @param maxDate       the maximum allowed end date value
+	 * @param minDate       an optional minimum allowed starting date value
+	 * @param maxDate       an optional maximum allowed end date value
 	 * @return the range, or {@code null} if not available
 	 * @throws RestClientException if the request fails
 	 */
 	public static DatumStreamTimeRange datumStreamTimeRange(RestClient restClient, NodeAndSource nodeAndSource,
-			Instant maxDate) {
+			Instant minDate, Instant maxDate) {
 		// @formatter:off
 		JsonNode range = restClient.get()
 			.uri(b -> {
-				return b.path("/solarquery/api/v1/sec/range/interval")
+				b.path("/solarquery/api/v1/sec/range/interval")
 					.queryParam("nodeId", nodeAndSource.nodeId())
 					.queryParam("sourceId", nodeAndSource.sourceId())
-					.build();
+					;
+				if (minDate != null) {
+					b.queryParam("startDate", minDate.atOffset(UTC).toLocalDateTime());
+				}
+				if (maxDate != null) {
+					b.queryParam("endDate", maxDate.atOffset(UTC).toLocalDateTime());
+				}
+				return b.build();
 			})
 			.accept(MediaType.APPLICATION_JSON)
 			.retrieve()
@@ -179,42 +186,36 @@ public final class RestUtils {
 			.path("data")
 			;		
 		// @formatter:on
-		ZoneId zone = (range.hasNonNull("timeZone") ? ZoneId.of(range.get("timeZone").textValue()) : ZoneOffset.UTC);
-		LocalDateTime startDate = parseDateAttribute(range, "startDate", ISO_DATE_OPT_TIME_ALT_LOCAL,
-				LocalDateTime::from);
-		LocalDateTime endDate = parseDateAttribute(range, "endDate", ISO_DATE_OPT_TIME_ALT_LOCAL, LocalDateTime::from);
-		if (startDate == null || endDate == null) {
+		if (!(range.hasNonNull("startDateMillis") && range.hasNonNull("endDateMillis"))) {
 			return null;
 		}
+		ZoneId zone = (range.hasNonNull("timeZone") ? ZoneId.of(range.get("timeZone").textValue()) : ZoneOffset.UTC);
+		Instant startDate = Instant.ofEpochMilli(JsonUtils.parseLongAttribute(range, "startDateMillis"));
+		Instant endDate = Instant.ofEpochMilli(JsonUtils.parseLongAttribute(range, "endDateMillis"));
 
-		// round to whole hours
-		startDate = startDate.truncatedTo(DAYS);
-		endDate = endDate.truncatedTo(DAYS).plusDays(1);
+		// round to whole days
+		startDate = startDate.atZone(zone).truncatedTo(DAYS).toInstant();
+		endDate = endDate.atZone(zone).truncatedTo(DAYS).plusDays(1).toInstant();
 
-		// enforce max date
-		Instant endInstant = endDate.atZone(zone).toInstant();
-		if (endInstant.isAfter(maxDate)) {
-			endDate = maxDate.atZone(zone).toLocalDateTime().truncatedTo(DAYS);
-		}
-
-		return new DatumStreamTimeRange(nodeAndSource, zone, new LocalDateTimeRange(startDate, endDate));
+		return new DatumStreamTimeRange(nodeAndSource, zone, Interval.of(startDate, endDate));
 	}
 
-	private static final ParameterizedTypeReference<ObjectDatumStreamDataSet<StreamDatum>> STREAM_DATUM_SET_TYPEREF = new ParameterizedTypeReference<ObjectDatumStreamDataSet<StreamDatum>>() {
+	private static final ParameterizedTypeReference<ObjectDatumStreamDataSet<AggregateStreamDatum>> STREAM_DATUM_SET_TYPEREF = new ParameterizedTypeReference<ObjectDatumStreamDataSet<AggregateStreamDatum>>() {
 	};
 
-	private static Datum firstDatum(ObjectDatumStreamDataSet<StreamDatum> results, String[] accumulatingProperties) {
-		for (StreamDatum d : results) {
+	private static Datum firstDatum(ObjectDatumStreamDataSet<AggregateStreamDatum> results,
+			String[] accumulatingProperties) {
+		for (AggregateStreamDatum d : results) {
 			ObjectDatumStreamMetadata streamMeta = results.metadataForStreamId(d.getStreamId());
 			return generalDatum(streamMeta, d, accumulatingProperties);
 		}
 		return null;
 	}
 
-	private static NavigableMap<Instant, Datum> allDatum(ObjectDatumStreamDataSet<StreamDatum> results,
+	private static NavigableMap<Instant, Datum> allDatum(ObjectDatumStreamDataSet<AggregateStreamDatum> results,
 			String[] accumulatingProperties) {
 		var result = new TreeMap<Instant, Datum>();
-		for (StreamDatum d : results) {
+		for (AggregateStreamDatum d : results) {
 			ObjectDatumStreamMetadata streamMeta = results.metadataForStreamId(d.getStreamId());
 			Datum datum = generalDatum(streamMeta, d, accumulatingProperties);
 			result.put(d.getTimestamp(), datum);
@@ -222,15 +223,15 @@ public final class RestUtils {
 		return result;
 	}
 
-	private static GeneralDatum generalDatum(ObjectDatumStreamMetadata streamMeta, StreamDatum d,
+	private static GeneralDatum generalDatum(ObjectDatumStreamMetadata streamMeta, AggregateStreamDatum d,
 			String[] accumulatingProperties) {
 		assert streamMeta != null && d != null && accumulatingProperties != null;
-		DatumSamples samples = new DatumSamples();
-		DatumProperties props = d.getProperties();
+		final DatumSamples samples = new DatumSamples();
+		final DatumPropertiesStatistics stats = d.getStatistics();
 		for (String propName : accumulatingProperties) {
-			int propIdx = streamMeta.propertyIndex(DatumSamplesType.Accumulating, propName);
+			final int propIdx = streamMeta.propertyIndex(DatumSamplesType.Accumulating, propName);
 			if (propIdx >= 0) {
-				BigDecimal propVal = props.accumulatingValue(propIdx);
+				BigDecimal propVal = stats.getAccumulatingDifference(propIdx);
 				samples.putAccumulatingSampleValue(propName, propVal);
 			}
 		}
@@ -248,17 +249,17 @@ public final class RestUtils {
 	 * @return the range, or {@code null} if not available
 	 * @throws RestClientException if the request fails
 	 */
-	public static Datum readingDifference(RestClient restClient, NodeAndSource nodeAndSource, LocalDateTime startDate,
-			LocalDateTime endDate, String[] accumulatingProperties) {
+	public static Datum readingDifference(RestClient restClient, NodeAndSource nodeAndSource, Instant startDate,
+			Instant endDate, String[] accumulatingProperties) {
 		// @formatter:off
-		ObjectDatumStreamDataSet<StreamDatum> results = restClient.get()
+		ObjectDatumStreamDataSet<AggregateStreamDatum> results = restClient.get()
 			.uri(b -> {
 				return b.path("/solarquery/api/v1/sec/datum/stream/reading")
+					.queryParam("readingType", "Difference")
 					.queryParam("nodeId", nodeAndSource.nodeId())
 					.queryParam("sourceId", nodeAndSource.sourceId())
-					.queryParam("localStartDate", startDate)
-					.queryParam("localEndDate", endDate)
-					.queryParam("readingType", "Difference")
+					.queryParam("startDate", startDate.atOffset(UTC).toLocalDateTime())
+					.queryParam("endDate", endDate.atOffset(UTC).toLocalDateTime())
 					.build();
 			})
 			.accept(MediaType.APPLICATION_JSON)
@@ -275,6 +276,7 @@ public final class RestUtils {
 	 * 
 	 * @param restClient             the REST client to use
 	 * @param nodeAndSource          the datum stream identifier
+	 * @param zone                   the time zone
 	 * @param startDate              the start date
 	 * @param endDate                the end date
 	 * @param accumulatingProperties the accumulating properties to extract
@@ -283,18 +285,18 @@ public final class RestUtils {
 	 * @return the range, or {@code null} if not available
 	 * @throws RestClientException if the request fails
 	 */
-	public static Datum readingDifferenceRollup(RestClient restClient, NodeAndSource nodeAndSource,
-			LocalDateTime startDate, LocalDateTime endDate, String[] accumulatingProperties, Aggregation aggregation,
+	public static Datum readingDifferenceRollup(RestClient restClient, NodeAndSource nodeAndSource, ZoneId zone,
+			Instant startDate, Instant endDate, String[] accumulatingProperties, Aggregation aggregation,
 			Aggregation partialAggregation) {
 		// @formatter:off
-		ObjectDatumStreamDataSet<StreamDatum> results = restClient.get()
+		ObjectDatumStreamDataSet<AggregateStreamDatum> results = restClient.get()
 			.uri(b -> {
 				b.path("/solarquery/api/v1/sec/datum/stream/reading")
+					.queryParam("readingType", "Difference")
 					.queryParam("nodeId", nodeAndSource.nodeId())
 					.queryParam("sourceId", nodeAndSource.sourceId())
-					.queryParam("localStartDate", startDate)
-					.queryParam("localEndDate", endDate)
-					.queryParam("readingType", "Difference")
+					.queryParam("localStartDate", startDate.atZone(zone).toLocalDate())
+					.queryParam("localEndDate", endDate.atZone(zone).toLocalDate())
 					.queryParam("aggregation", aggregation)
 					;
 				if (ChronoUnit.HOURS.between(startDate, endDate) > 1) {
@@ -322,21 +324,21 @@ public final class RestUtils {
 	 * @param endDate                the end date
 	 * @param accumulatingProperties the accumulating properties to extract
 	 * @param aggregation            the aggregation
-	 * @return the range, or {@code null} if not available
+	 * @return the datum, or {@code null} if not available
 	 * @throws RestClientException if the request fails
 	 */
 	public static NavigableMap<Instant, Datum> readingDifferenceAggregates(RestClient restClient,
-			NodeAndSource nodeAndSource, LocalDateTime startDate, LocalDateTime endDate,
-			String[] accumulatingProperties, Aggregation aggregation) {
+			NodeAndSource nodeAndSource, Instant startDate, Instant endDate, String[] accumulatingProperties,
+			Aggregation aggregation) {
 		// @formatter:off
-		ObjectDatumStreamDataSet<StreamDatum> results = restClient.get()
+		ObjectDatumStreamDataSet<AggregateStreamDatum> results = restClient.get()
 			.uri(b -> {
 				b.path("/solarquery/api/v1/sec/datum/stream/reading")
+					.queryParam("readingType", "Difference")
 					.queryParam("nodeId", nodeAndSource.nodeId())
 					.queryParam("sourceId", nodeAndSource.sourceId())
-					.queryParam("localStartDate", startDate)
-					.queryParam("localEndDate", endDate)
-					.queryParam("readingType", "Difference")
+					.queryParam("startDate", startDate.atOffset(UTC).toLocalDateTime())
+					.queryParam("endDate", endDate.atOffset(UTC).toLocalDateTime())
 					.queryParam("aggregation", aggregation)
 					;
 				return b.build();
@@ -356,14 +358,14 @@ public final class RestUtils {
 	 * @param staleTimeRange the time range
 	 * @return the URL
 	 */
-	public static URI markStaleUri(NodeAndSource nodeAndSource, LocalDateTimeRange staleTimeRange) {
+	public static URI markStaleUri(NodeAndSource nodeAndSource, Interval staleTimeRange) {
 		// @formatter:off
 		return UriComponentsBuilder.newInstance()
 			.path("/solaruser/api/v1/sec/datum/maint/agg/stale")
 			.queryParam("nodeId", nodeAndSource.nodeId())
 			.queryParam("sourceId", nodeAndSource.sourceId())
-			.queryParam("localStartDate", staleTimeRange.start())
-			.queryParam("localEndDate", staleTimeRange.end())
+			.queryParam("startDate", staleTimeRange.getStart().atOffset(UTC).toLocalDateTime())
+			.queryParam("endDate", staleTimeRange.getEnd().atOffset(UTC).toLocalDateTime())
 			.build()
 			.toUri()
 			;
@@ -379,13 +381,12 @@ public final class RestUtils {
 	 * @return {@code true} if successful
 	 * @throws RestClientException if the request fails
 	 */
-	public static boolean markStale(RestClient restClient, NodeAndSource nodeAndSource,
-			LocalDateTimeRange staleTimeRange) {
+	public static boolean markStale(RestClient restClient, NodeAndSource nodeAndSource, Interval staleTimeRange) {
 		var postBody = new LinkedMultiValueMap<String, Object>(4);
 		postBody.set("nodeId", nodeAndSource.nodeId());
 		postBody.set("sourceId", nodeAndSource.sourceId());
-		postBody.set("localStartDate", staleTimeRange.start().toString());
-		postBody.set("localEndDate", staleTimeRange.end().toString());
+		postBody.set("startDate", staleTimeRange.getStart().atOffset(UTC).toLocalDateTime().toString());
+		postBody.set("endDate", staleTimeRange.getEnd().atOffset(UTC).toLocalDateTime().toString());
 		// @formatter:off
 		JsonNode success = restClient.post()
 			.uri("/solaruser/api/v1/sec/datum/maint/agg/stale")

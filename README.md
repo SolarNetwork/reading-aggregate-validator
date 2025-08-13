@@ -147,7 +147,7 @@ with the `--node-id=X` option.
 |:-------|:------------|
 | `-j N` `--threads=N` | Number of streams to validate concurrently. |
 | `-h` `--help` | Display help information. |
-| `-o N` `--min-days-offset=N` | The minimum number of days offset from today to allow validation. Defaults to `1`. |
+| `-o N` `--min-days-offset=N` | The minimum number of days offset from today to allow validation. Defaults to `5`. |
 | `-R` `--newest-to-oldest` | Process data in a newest-to-oldest (reverse time) fashion. |
 | `-v` `--verbose` | Increase verbosity of output. Can specify multiple times to increase verbosity even more. |
 | `-w N` `--max-wait=N` | A maximum amount of time to run the validation, in ISO period form like `PT10M` for 10 minutes (the default). |

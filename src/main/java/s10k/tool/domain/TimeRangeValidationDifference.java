@@ -3,8 +3,11 @@ package s10k.tool.domain;
 import static net.solarnetwork.domain.datum.DatumSamplesType.Accumulating;
 
 import java.math.BigDecimal;
+import java.time.temporal.ChronoUnit;
 import java.util.LinkedHashMap;
 import java.util.Map;
+
+import org.threeten.extra.Interval;
 
 import net.solarnetwork.domain.datum.Aggregation;
 import net.solarnetwork.domain.datum.Datum;
@@ -16,7 +19,7 @@ import net.solarnetwork.domain.datum.Datum;
  * @param range       the time range validated
  * @param differences the discovered property differences
  */
-public record TimeRangeValidationDifference(Aggregation aggregation, LocalDateTimeRange range,
+public record TimeRangeValidationDifference(Aggregation aggregation, Interval range,
 		Map<String, PropertyValueComparison> differences) {
 
 	/**
@@ -34,8 +37,8 @@ public record TimeRangeValidationDifference(Aggregation aggregation, LocalDateTi
 	 * @param accumulatingProperties the accumulating properties to compare
 	 * @return the differences
 	 */
-	public static TimeRangeValidationDifference differences(Aggregation aggregation, LocalDateTimeRange timeRange,
-			Datum expected, Datum actual, String[] accumulatingProperties) {
+	public static TimeRangeValidationDifference differences(Aggregation aggregation, Interval timeRange, Datum expected,
+			Datum actual, String[] accumulatingProperties) {
 		Map<String, PropertyValueComparison> result = null;
 		for (String propertyName : accumulatingProperties) {
 			BigDecimal expectedVal = (expected != null
@@ -79,7 +82,7 @@ public record TimeRangeValidationDifference(Aggregation aggregation, LocalDateTi
 	 * @return {@code true} if the range represents a single hour
 	 */
 	public boolean isHourRange() {
-		return range.hourCount() == 1L;
+		return range.getStart().until(range.getEnd(), ChronoUnit.HOURS) == 1;
 	}
 
 }
