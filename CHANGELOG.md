@@ -3,7 +3,7 @@
 This document describes changes in each release of the SolarNetwork Reading Aggregate Validation
 Tool.
 
-## [Develop](https://github.com/SolarNetwork/reading-aggregate-validator/tree/develop)
+## [1.2.0](https://github.com/SolarNetwork/reading-aggregate-validator/tree/1.2.0)
 
 ### New features
 
