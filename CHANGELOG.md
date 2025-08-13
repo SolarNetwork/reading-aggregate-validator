@@ -5,11 +5,25 @@ Tool.
 
 ## [Develop](https://github.com/SolarNetwork/reading-aggregate-validator/tree/develop)
 
+### New features
+
+ * More detailed reporting on task status: completed, partially completed, and never started states
+   are reported instead of the general **No validation problems found** message.
+
 ### Fixes
 
  * Use absolute dates in all API calls, to avoid issues with daylight saving time.
- * Fix reading comparison to use reading statistics, not calendar properties. This
-   resulted in false-positives when the two measurement styles differed.
+ * Fix reading comparison to use reading statistics, not calendar properties. This resulted in
+   false-positives when the two measurement styles differed.
+ * Better cope with time ranges that split on large gaps in data.
+ * When marking one hour/day stale to compensate for a higher-level aggregate mismatch, find the
+   first hour of each day with actual data to mark as stale, otherwise marking an hour without any
+   data will have no effect and the higher-level aggregate will not be reprocessed.
+ 
+### Other changes
+
+ * Change the default for `--min-days-offset` from 1 to 5 to not follow current events so closely.
+
 
 ## [1.1.0](https://github.com/SolarNetwork/reading-aggregate-validator/tree/1.1.0)
 
