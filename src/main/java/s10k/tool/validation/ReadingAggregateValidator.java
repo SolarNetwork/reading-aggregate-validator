@@ -44,6 +44,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpClientErrorException.TooManyRequests;
@@ -689,8 +690,24 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			} catch (TooManyRequests e) {
 				// sleep, and then try again
 				if (!(stop || globalStop)) {
+					// assume default pause of 1s, but check for a Retry-After header to use;
+					// a minimum of 100ms will be applied
+					long sleepMs = 1000L;
+					HttpHeaders responseHeaders = e.getResponseHeaders();
+					if (responseHeaders != null) {
+						String retryAfter = responseHeaders.getFirst("X-SN-Rate-Limit-Retry-After");
+						if (retryAfter != null) {
+							try {
+								long retryEpoch = Long.parseLong(retryAfter);
+								long retryDiff = retryEpoch - System.currentTimeMillis();
+								sleepMs = Math.max(100, Math.min(sleepMs, retryDiff));
+							} catch (NumberFormatException nfe) {
+								// ignore and just use default
+							}
+						}
+					}
 					try {
-						Thread.sleep(1000L);
+						Thread.sleep(sleepMs);
 						if (!(stop || globalStop)) {
 							return restOp(provider);
 						}
