@@ -11,6 +11,7 @@ import static net.solarnetwork.domain.datum.Aggregation.Hour;
 import static net.solarnetwork.domain.datum.Aggregation.Month;
 import static net.solarnetwork.domain.datum.Aggregation.None;
 import static net.solarnetwork.util.DateUtils.ISO_DATE_OPT_TIME_ALT_LOCAL;
+import static net.solarnetwork.util.DateUtils.ISO_DATE_TIME_ALT_UTC;
 import static net.solarnetwork.util.DateUtils.LOCAL_DATE;
 import static net.solarnetwork.util.StringNaturalSortComparator.CASE_INSENSITIVE_NATURAL_SORT;
 import static org.supercsv.prefs.CsvPreference.STANDARD_PREFERENCE;
@@ -60,9 +61,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import net.solarnetwork.domain.datum.Aggregation;
 import net.solarnetwork.domain.datum.Datum;
+import net.solarnetwork.domain.datum.DatumSamplesType;
 import net.solarnetwork.io.NullWriter;
 import net.solarnetwork.security.Snws2AuthorizationBuilder;
-import net.solarnetwork.util.DateUtils;
 import net.solarnetwork.web.jakarta.support.StaticAuthorizationCredentialsProvider;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Help.Ansi;
@@ -85,6 +86,9 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 	@Option(names = { "-v", "--verbose" }, description = "verbose output")
 	boolean[] verbosity;
 
+	@Option(names = { "-n", "--dry-run" }, description = "do not make any changes")
+	boolean dryRun;
+
 	@Option(names = { "--http-trace" }, description = "trace HTTP exchanges")
 	boolean traceHttp;
 
@@ -106,7 +110,8 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			"--property" }, description = "a property name to validate", required = true, split = "\\s*,\\s*", splitSynopsisLabel = ",")
 	String[] properties;
 
-	@Option(names = { "-w", "--max-wait" }, description = "maximum time to wait for validation to complete")
+	@Option(names = { "-w",
+			"--max-wait" }, description = "maximum time to wait for validation to complete", defaultValue = "PT10M")
 	Duration maxWait = Duration.ofMinutes(10L);
 
 	@Option(names = { "-u", "--token" }, description = "the SolarNetwork API token", required = true)
@@ -134,17 +139,18 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 	boolean newestToOldest;
 
 	@Option(names = {
-			" " }, description = "compensate for higher aggregation levels reporting differences that lower levels do not")
+			"--compensate-higher-agg" }, description = "compensate for higher aggregation levels reporting differences that lower levels do not")
 	boolean compensateForHigherAggregations;
 
 	@Option(names = {
-			"--generate-reset-datum" }, description = "generate Reset datum auxiliary records when --compensate-higher-agg enabled")
-	boolean generateAuxiliaryResetDatum;
+			"--generate-reset-datum-min-gap" }, description = "generate Reset datum auxiliary records when --compensate-higher-agg enabled and a gap exists of at least this much time")
+	Duration generateAuxiliaryResetDatumGap;
 
 	@Option(names = { "-i", "--incremental-mark-stale" }, description = "incrementally mark individual stream results")
 	boolean incrementalMarkStale;
 
 	private static final Duration HALF_YEAR = Duration.ofDays(183);
+	private static final String DRY_RUN_PREFIX = "@|blue [Dry run]|@";
 
 	private final ClientHttpRequestFactory reqFactory;
 	private final ObjectMapper objectMapper;
@@ -361,8 +367,21 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			for (Interval staleTimeRange : staleTimeRanges) {
 				URI markStaleUri = RestUtils.markStaleUri(streamIdent, staleTimeRange);
 				if (markStale) {
-					boolean marked = RestUtils.markStale(restClient, streamIdent, staleTimeRange);
-					if (marked) {
+					boolean marked = (!dryRun ? RestUtils.markStale(restClient, streamIdent, staleTimeRange) : true);
+					if (dryRun) {
+						// @formatter:off
+						System.out.print(Ansi.AUTO.string("""
+								%s %s Marked range %s - %s as stale (%d hours)
+								""".formatted(
+										  streamIdentMessagePrefix
+										, DRY_RUN_PREFIX
+										, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.getStart().atZone(result.zone()).toLocalDateTime())
+										, ISO_DATE_OPT_TIME_ALT_LOCAL.format(staleTimeRange.getEnd().atZone(result.zone()).toLocalDateTime())
+										, HOURS.between(staleTimeRange.getStart(), staleTimeRange.getEnd())
+									)
+								));
+						// @formatter:on
+					} else if (marked) {
 						// @formatter:off
 						System.out.print(Ansi.AUTO.string("""
 								%s Marked range %s - %s as stale (%d hours)
@@ -409,6 +428,15 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 		}
 		return ("[@|yellow %" + nodeIdWidth + "d|@ @|yellow %-" + sourceIdWidth + "s|@]")
 				.formatted(nodeAndSource.nodeId(), nodeAndSource.sourceId());
+	}
+
+	private boolean hasRequiredAccumulatingProperties(Datum datum) {
+		for (String propName : properties) {
+			if (datum.asSampleOperations().getSampleBigDecimal(DatumSamplesType.Accumulating, propName) == null) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	private final class StreamValidator implements Callable<DatumStreamValidationResult> {
@@ -563,131 +591,199 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 						}
 					}
 				} else {
-					// bisect to narrow down the difference and report results
-					final long rangeDaysHalf = rangeDays / 2;
-					DatumStreamTimeRange leftRange = startingHalfRange(range, rangeDaysHalf);
-					DatumStreamTimeRange rightRange = endingHalfRange(range, rangeDaysHalf);
-					boolean result1 = findDifferences(newestToOldest ? rightRange : leftRange);
-					if (result1) {
-						differencesFound = true;
-					}
-					if (stop || globalStop) {
-						state.set(Incomplete);
-						return differencesFound;
-					}
-					boolean result2 = findDifferences(newestToOldest ? leftRange : rightRange);
-					if (result2) {
-						differencesFound = true;
-					}
-					if (stop || globalStop) {
-						state.set(Incomplete);
-						return differencesFound;
-					}
-					if (compensateForHigherAggregations && !(result1 || result2)) {
-						// the overall range was different, but both sub-ranges are not;
-						// the higher-level aggregate must be off somewhere, so we need to
-						// recompute one hour within every day in the overall range to try to fix
-						if (verbosity != null) {
-							// @formatter:off
-							System.out.print(Ansi.AUTO.string("""
-									%s Difference discovered in range %s - %s (%s; %d days) but not either half range:
-										Starting half range: %s - %s
-										Ending half range:   %s - %s
-									""".formatted(
-											  streamMessagePrefix
-											, LOCAL_DATE.format(range.startLocal())
-											, LOCAL_DATE.format(range.endLocal())
-											, range.zone().getId()
-											, DAYS.between(range.startLocal(), range.endLocal())
-											, LOCAL_DATE.format(leftRange.startLocal())
-											, LOCAL_DATE.format(leftRange.endLocal())
-											, LOCAL_DATE.format(rightRange.startLocal())
-											, LOCAL_DATE.format(rightRange.endLocal())
-										)
-									));
-							// @formatter:on
-						}
+					differencesFound = bisect(range);
+				}
+			}
 
-						if (generateAuxiliaryResetDatum) {
-							// look for gap with missing Reset datum; first get reading start date for range
-							Datum reading = readingDifference(leftRange);
+			return differencesFound;
+		}
 
-							// now get starting datum + next for that date
-							if (reading != null) {
-								SequencedCollection<Datum> pair = datum(new DatumStreamTimeRange(nodeAndSource, zone,
-										Interval.of(reading.getTimestamp(), range.end())), 2).sequencedValues();
+		private boolean bisect(DatumStreamTimeRange range) {
+			boolean differencesFound = false;
 
-								// find "next" datum after reading start
-								if (pair.size() == 2) {
-									Datum start = pair.getFirst();
-									Datum next = pair.getLast();
-									// verify the "next" datum is still within our overall time range
-									if (range.timeRange().contains(next.getTimestamp())) {
-										// look for NO reset records (bail if any reset records found)
-										final Interval resetGap = Interval.of(start.getTimestamp(),
-												next.getTimestamp());
-										if (!hasDatumAuxiliaryResetRecord(
-												new DatumStreamTimeRange(nodeAndSource, zone, resetGap))) {
-											TimeRangeValidationDifference resetDiff = differences(None, resetGap, start,
-													next, properties);
-											if (resetDiff.hasDifferences()) {
-												Instant resetRecordDate = saveDatumAuxiliaryResetRecord(nodeAndSource,
-														resetDiff);
-												if (resetRecordDate != null) {
-													PropertyValueComparison firstPropDiff = resetDiff.differences()
-															.values().iterator().next();
-													System.out
-															.println("\tCreated Reset record @ %s (%s -> %s)".formatted(
-																	DateUtils.ISO_DATE_TIME_ALT_UTC
-																			.format(resetRecordDate),
-																	firstPropDiff.expectedValue(),
-																	firstPropDiff.actualValue()));
-													// treat this as difference found
-													return true;
-												}
+			long rangeDays = range.dayCount();
+
+			// bisect to narrow down the difference and report results
+			final long rangeDaysHalf = rangeDays / 2;
+			DatumStreamTimeRange leftRange = startingHalfRange(range, rangeDaysHalf);
+			DatumStreamTimeRange rightRange = endingHalfRange(range, rangeDaysHalf);
+			boolean result1 = findDifferences(newestToOldest ? rightRange : leftRange);
+			if (result1) {
+				differencesFound = true;
+			}
+			if (stop || globalStop) {
+				state.set(Incomplete);
+				return differencesFound;
+			}
+			boolean result2 = findDifferences(newestToOldest ? leftRange : rightRange);
+			if (result2) {
+				differencesFound = true;
+			}
+			if (stop || globalStop) {
+				state.set(Incomplete);
+				return differencesFound;
+			}
+			if (compensateForHigherAggregations && !(result1 || result2)) {
+				// the overall range was different, but both sub-ranges are not;
+				// the higher-level aggregate must be off somewhere, so we need to
+				// recompute one hour within every day in the overall range to try to fix
+				// @formatter:off
+				var compMsg = new StringBuilder("""
+					%s Difference discovered in range %s - %s (%s; %s days) but not either half range:
+						Starting half range: %s - %s
+						Ending half range:   %s - %s
+					""".formatted(
+							  streamMessagePrefix
+							, LOCAL_DATE.format(range.startLocal())
+							, LOCAL_DATE.format(range.endLocal())
+							, range.zone().getId()
+							, rangeDays > 14 ? "@|red %d|@".formatted(rangeDays) : String.valueOf(rangeDays)
+							, LOCAL_DATE.format(leftRange.startLocal())
+							, LOCAL_DATE.format(leftRange.endLocal())
+							, LOCAL_DATE.format(rightRange.startLocal())
+							, LOCAL_DATE.format(rightRange.endLocal())
+						)
+					);
+				// @formatter:on
+
+				if (generateAuxiliaryResetDatumGap != null) {
+					// look for gap with missing Reset datum; first get reading start date for range
+					Datum reading = readingDifference(leftRange);
+
+					// now get starting datum + next for that date
+					if (reading != null) {
+						SequencedCollection<Datum> pair = datum(new DatumStreamTimeRange(nodeAndSource, zone,
+								Interval.of(reading.getTimestamp(), range.end())), 2).sequencedValues();
+
+						// find "next" datum after reading start
+						if (pair.size() == 2) {
+							Datum start = pair.getFirst();
+							Datum next = pair.getLast();
+
+							// the "next" datum may not actually have accumulating property values, so
+							// if not we will inspect some "following" datum under the assumption that
+							// accumulating properties will resume again soon
+							Datum nextReading = next;
+
+							// verify the "next" datum is still within our overall time range and
+							// the gap between the two is >= generateAuxiliaryResetDatumGap
+							final Interval resetGap = Interval.of(start.getTimestamp(), next.getTimestamp());
+
+							if (range.timeRange().contains(next.getTimestamp())
+									&& resetGap.toDuration().compareTo(generateAuxiliaryResetDatumGap) >= 0) {
+								if (!hasRequiredAccumulatingProperties(next)) {
+									// "next" datum missing accumulating properties, so see if we can find a
+									// following datum with accumulating props, within a short time period,
+									// inspecting smaller "chunks" of time to limit requests to reasonable
+									// amounts of data
+									Instant maxFollowingDate = next.getTimestamp().plus(14, DAYS);
+									FOLLOW: for (Instant followStart = next.getTimestamp(); followStart
+											.isBefore(maxFollowingDate); followStart = followStart.plus(1, HOURS)) {
+										SequencedCollection<Datum> following = datum(
+												new DatumStreamTimeRange(nodeAndSource, zone,
+														Interval.of(followStart, followStart.plus(1, HOURS))),
+												null).sequencedValues();
+										for (Datum another : following) {
+											if (hasRequiredAccumulatingProperties(another)) {
+												// got our target
+												nextReading = another;
+												break FOLLOW;
 											}
 										}
 									}
 								}
+
+								// look for NO reset records (bail if any reset records found)
+								if (hasRequiredAccumulatingProperties(nextReading) && !hasDatumAuxiliaryResetRecord(
+										new DatumStreamTimeRange(nodeAndSource, zone, resetGap))) {
+									TimeRangeValidationDifference resetDiff = differences(None, resetGap, start,
+											nextReading, properties);
+									if (resetDiff.hasDifferences()) {
+										if (dryRun) {
+											PropertyValueComparison firstPropDiff = resetDiff.differences().values()
+													.iterator().next();
+											// @formatter:off
+											compMsg.append("""
+														Datum gap: %s - %s (@|red %d|@ days)
+														%s Create Reset before gap end (@|bold %s|@ -> @|bold %s|@)
+													""".formatted(
+														ISO_DATE_TIME_ALT_UTC.format(start.getTimestamp()),
+														ISO_DATE_TIME_ALT_UTC.format(next.getTimestamp()),
+														DAYS.between(start.getTimestamp(), next.getTimestamp()),
+														DRY_RUN_PREFIX,
+														firstPropDiff.expectedValue(),
+														firstPropDiff.actualValue())
+													);
+											// @formatter:on
+											System.out.print(Ansi.AUTO.string(compMsg.toString()));
+										} else {
+											Instant resetRecordDate = saveDatumAuxiliaryResetRecord(nodeAndSource,
+													resetDiff);
+											if (resetRecordDate != null) {
+												PropertyValueComparison firstPropDiff = resetDiff.differences().values()
+														.iterator().next();
+												// @formatter:off
+												compMsg.append("""
+														Datum gap: %s - %s (@|red %d|@ days)
+														Created Reset @ %s (@|bold %s|@ -> @|bold %s|@)
+													""".formatted(
+														ISO_DATE_TIME_ALT_UTC.format(start.getTimestamp()),
+														ISO_DATE_TIME_ALT_UTC.format(next.getTimestamp()),
+														DAYS.between(start.getTimestamp(), next.getTimestamp()),
+														ISO_DATE_TIME_ALT_UTC.format(resetRecordDate),
+														firstPropDiff.expectedValue(),
+														firstPropDiff.actualValue()));
+												System.out.print(Ansi.AUTO.string(compMsg.toString()));
+												// @formatter:on
+
+											}
+										}
+
+										// treat this as difference found
+										return true;
+									}
+								}
 							}
 						}
+					}
+				}
 
-						System.out.println("\tInvalidating one hour/day");
-						for (LocalDateTime hour = range.startLocal().truncatedTo(DAYS), end = range.endLocal(); hour
-								.isBefore(end); hour = hour.plusDays(1)) {
-							final Instant hourStart = hour.atZone(zone).toInstant();
+				if (verbosity != null) {
+					compMsg.append("\tInvalidating one hour/day");
+					System.out.println(Ansi.AUTO.string(compMsg.toString()));
+				}
+				for (LocalDateTime hour = range.startLocal().truncatedTo(DAYS), end = range.endLocal(); hour
+						.isBefore(end); hour = hour.plusDays(1)) {
+					final Instant hourStart = hour.atZone(zone).toInstant();
 
-							// there could be large gaps in the where we split the left/right halves,
-							// so skip hours that are not within the two half ranges we resolved
-							if (!(leftRange.timeRange().contains(hourStart)
-									|| rightRange.timeRange().contains(hourStart))) {
-								continue;
-							}
+					// there could be large gaps in the where we split the left/right halves,
+					// so skip hours that are not within the two half ranges we resolved
+					if (!(leftRange.timeRange().contains(hourStart) || rightRange.timeRange().contains(hourStart))) {
+						continue;
+					}
 
-							// find first available hour aggregate on given day, then re-process that (so we
-							// submit an hour with actual data)
-							final NavigableMap<Instant, Datum> hourAggsInDay = readingDifferenceAggregates(
-									new DatumStreamTimeRange(nodeAndSource, zone,
-											Interval.of(hourStart, hour.plusDays(1).atZone(zone).toInstant())));
+					// find first available hour aggregate on given day, then re-process that (so we
+					// submit an hour with actual data)
+					final NavigableMap<Instant, Datum> hourAggsInDay = readingDifferenceAggregates(
+							new DatumStreamTimeRange(nodeAndSource, zone,
+									Interval.of(hourStart, hour.plusDays(1).atZone(zone).toInstant())));
 
-							if (hourAggsInDay.isEmpty()) {
-								continue;
-							}
+					if (hourAggsInDay.isEmpty()) {
+						continue;
+					}
 
-							final Instant firstHourInDay = hourAggsInDay.firstKey();
+					final Instant firstHourInDay = hourAggsInDay.firstKey();
 
-							final Interval hourRange = Interval.of(firstHourInDay, firstHourInDay.plus(1, HOURS));
-							final Map<String, PropertyValueComparison> syntheticDifferences = new LinkedHashMap<>(
-									properties.length);
-							for (String propertyName : properties) {
-								syntheticDifferences.put(propertyName, new PropertyValueComparison(ZERO, ONE));
-							}
-							differencesFound = true;
-							if (addInvalidHourShouldStop(
-									new TimeRangeValidationDifference(Hour, hourRange, syntheticDifferences))) {
-								return true;
-							}
-						}
+					final Interval hourRange = Interval.of(firstHourInDay, firstHourInDay.plus(1, HOURS));
+					final Map<String, PropertyValueComparison> syntheticDifferences = new LinkedHashMap<>(
+							properties.length);
+					for (String propertyName : properties) {
+						syntheticDifferences.put(propertyName, new PropertyValueComparison(ZERO, ONE));
+					}
+					differencesFound = true;
+					if (addInvalidHourShouldStop(
+							new TimeRangeValidationDifference(Hour, hourRange, syntheticDifferences))) {
+						return true;
 					}
 				}
 			}
