@@ -9,6 +9,7 @@ import static java.util.stream.Collectors.joining;
 import static net.solarnetwork.domain.datum.Aggregation.Day;
 import static net.solarnetwork.domain.datum.Aggregation.Hour;
 import static net.solarnetwork.domain.datum.Aggregation.Month;
+import static net.solarnetwork.domain.datum.Aggregation.None;
 import static net.solarnetwork.util.DateUtils.ISO_DATE_OPT_TIME_ALT_LOCAL;
 import static net.solarnetwork.util.DateUtils.LOCAL_DATE;
 import static net.solarnetwork.util.StringNaturalSortComparator.CASE_INSENSITIVE_NATURAL_SORT;
@@ -33,6 +34,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.NavigableMap;
+import java.util.SequencedCollection;
 import java.util.SortedSet;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
@@ -60,6 +62,7 @@ import net.solarnetwork.domain.datum.Aggregation;
 import net.solarnetwork.domain.datum.Datum;
 import net.solarnetwork.io.NullWriter;
 import net.solarnetwork.security.Snws2AuthorizationBuilder;
+import net.solarnetwork.util.DateUtils;
 import net.solarnetwork.web.jakarta.support.StaticAuthorizationCredentialsProvider;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Help.Ansi;
@@ -131,8 +134,12 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 	boolean newestToOldest;
 
 	@Option(names = {
-			"--compensate-higher-agg" }, description = "compensate for higher aggregation levels reporting differences that lower levels do not")
+			" " }, description = "compensate for higher aggregation levels reporting differences that lower levels do not")
 	boolean compensateForHigherAggregations;
+
+	@Option(names = {
+			"--generate-reset-datum" }, description = "generate Reset datum auxiliary records when --compensate-higher-agg enabled")
+	boolean generateAuxiliaryResetDatum;
 
 	@Option(names = { "-i", "--incremental-mark-stale" }, description = "incrementally mark individual stream results")
 	boolean incrementalMarkStale;
@@ -586,7 +593,6 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 									%s Difference discovered in range %s - %s (%s; %d days) but not either half range:
 										Starting half range: %s - %s
 										Ending half range:   %s - %s
-										Invalidating one hour/day
 									""".formatted(
 											  streamMessagePrefix
 											, LOCAL_DATE.format(range.startLocal())
@@ -601,6 +607,52 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 									));
 							// @formatter:on
 						}
+
+						if (generateAuxiliaryResetDatum) {
+							// look for gap with missing Reset datum; first get reading start date for range
+							Datum reading = readingDifference(leftRange);
+
+							// now get starting datum + next for that date
+							if (reading != null) {
+								SequencedCollection<Datum> pair = datum(new DatumStreamTimeRange(nodeAndSource, zone,
+										Interval.of(reading.getTimestamp(), range.end())), 2).sequencedValues();
+
+								// find "next" datum after reading start
+								if (pair.size() == 2) {
+									Datum start = pair.getFirst();
+									Datum next = pair.getLast();
+									// verify the "next" datum is still within our overall time range
+									if (range.timeRange().contains(next.getTimestamp())) {
+										// look for NO reset records (bail if any reset records found)
+										final Interval resetGap = Interval.of(start.getTimestamp(),
+												next.getTimestamp());
+										if (!hasDatumAuxiliaryResetRecord(
+												new DatumStreamTimeRange(nodeAndSource, zone, resetGap))) {
+											TimeRangeValidationDifference resetDiff = differences(None, resetGap, start,
+													next, properties);
+											if (resetDiff.hasDifferences()) {
+												Instant resetRecordDate = saveDatumAuxiliaryResetRecord(nodeAndSource,
+														resetDiff);
+												if (resetRecordDate != null) {
+													PropertyValueComparison firstPropDiff = resetDiff.differences()
+															.values().iterator().next();
+													System.out
+															.println("\tCreated Reset record @ %s (%s -> %s)".formatted(
+																	DateUtils.ISO_DATE_TIME_ALT_UTC
+																			.format(resetRecordDate),
+																	firstPropDiff.expectedValue(),
+																	firstPropDiff.actualValue()));
+													// treat this as difference found
+													return true;
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+
+						System.out.println("\tInvalidating one hour/day");
 						for (LocalDateTime hour = range.startLocal().truncatedTo(DAYS), end = range.endLocal(); hour
 								.isBefore(end); hour = hour.plusDays(1)) {
 							final Instant hourStart = hour.atZone(zone).toInstant();
@@ -741,9 +793,29 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			});
 		}
 
+		private Datum readingDifference(DatumStreamTimeRange range) {
+			return restOp(() -> RestUtils.readingDifference(restClient, range.nodeAndSource(), range.start(),
+					range.end(), properties));
+		}
+
+		private NavigableMap<Instant, Datum> datum(DatumStreamTimeRange range, Integer limit) {
+			return restOp(() -> RestUtils.datum(restClient, range.nodeAndSource(), range.start(), range.end(), limit,
+					properties));
+		}
+
 		private NavigableMap<Instant, Datum> readingDifferenceAggregates(DatumStreamTimeRange range) {
 			return restOp(() -> RestUtils.readingDifferenceAggregates(restClient, range.nodeAndSource(), range.start(),
 					range.end(), properties, Hour));
+		}
+
+		private boolean hasDatumAuxiliaryResetRecord(DatumStreamTimeRange range) {
+			return restOp(
+					() -> RestUtils.hasDatumAuxiliaryResetRecord(restClient, range.nodeAndSource(), range.timeRange()));
+		}
+
+		private Instant saveDatumAuxiliaryResetRecord(NodeAndSource nodeAndSource,
+				TimeRangeValidationDifference resetDiff) {
+			return restOp(() -> RestUtils.saveDatumAuxiliaryResetRecord(restClient, nodeAndSource, resetDiff));
 		}
 
 	}
