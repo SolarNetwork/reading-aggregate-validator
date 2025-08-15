@@ -3,6 +3,15 @@
 This document describes changes in each release of the SolarNetwork Reading Aggregate Validation
 Tool.
 
+## [develop](https://github.com/SolarNetwork/reading-aggregate-validator/tree/develop)
+
+### New features
+
+ * Add new `--dry-run` option to run the validation without making any changes in SolarNetwork.
+ * Add new `--generate-reset-datum-min-gap=N` option to support automatically creating Reset
+   datum auxiliary records to cope with gaps in data.
+
+
 ## [1.2.0](https://github.com/SolarNetwork/reading-aggregate-validator/tree/1.2.0)
 
 ### New features
