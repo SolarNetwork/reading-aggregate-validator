@@ -10,9 +10,9 @@ import static net.solarnetwork.util.DateUtils.ISO_DATE_TIME_ALT_UTC;
 import java.math.BigDecimal;
 import java.net.URI;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
-import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -319,41 +319,31 @@ public final class RestUtils {
 	}
 
 	/**
-	 * Query for a {@code Difference} rollup datum, or hourly aggregate datum if the
-	 * time range is exactly one hour.
+	 * Query for a {@code Difference} rollup datum.
 	 * 
 	 * @param restClient             the REST client to use
 	 * @param nodeAndSource          the datum stream identifier
-	 * @param zone                   the time zone
 	 * @param startDate              the start date
 	 * @param endDate                the end date
 	 * @param accumulatingProperties the accumulating properties to extract
 	 * @param aggregation            the aggregation
-	 * @param partialAggregation     an optional partial aggregation
 	 * @return the range, or {@code null} if not available
 	 * @throws RestClientException if the request fails
 	 */
-	public static Datum readingDifferenceRollup(RestClient restClient, NodeAndSource nodeAndSource, ZoneId zone,
-			Instant startDate, Instant endDate, String[] accumulatingProperties, Aggregation aggregation,
-			Aggregation partialAggregation) {
+	public static Datum readingDifferenceRollup(RestClient restClient, NodeAndSource nodeAndSource, LocalDate startDate,
+			LocalDate endDate, String[] accumulatingProperties, Aggregation aggregation) {
 		// @formatter:off
 		ObjectDatumStreamDataSet<AggregateStreamDatum> results = restClient.get()
 			.uri(b -> {
-				b.path("/solarquery/api/v1/sec/datum/stream/reading")
+				return b.path("/solarquery/api/v1/sec/datum/stream/reading")
 					.queryParam("readingType", "Difference")
 					.queryParam("nodeId", nodeAndSource.nodeId())
 					.queryParam("sourceId", nodeAndSource.sourceId())
-					.queryParam("localStartDate", startDate.atZone(zone).toLocalDate())
-					.queryParam("localEndDate", endDate.atZone(zone).toLocalDate())
+					.queryParam("localStartDate", startDate)
+					.queryParam("localEndDate", endDate)
 					.queryParam("aggregation", aggregation)
-					;
-				if (ChronoUnit.HOURS.between(startDate, endDate) > 1) {
-					b.queryParam("rollupType", "All");
-					if (partialAggregation != null ) {
-						b.queryParam("partialAggregation", partialAggregation);
-					}
-				}
-				return b.build();
+					.queryParam("rollupType", "All")
+					.build();
 			})
 			.accept(MediaType.APPLICATION_JSON)
 			.retrieve()

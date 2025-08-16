@@ -8,7 +8,6 @@ import static java.time.temporal.ChronoUnit.HOURS;
 import static java.util.stream.Collectors.joining;
 import static net.solarnetwork.domain.datum.Aggregation.Day;
 import static net.solarnetwork.domain.datum.Aggregation.Hour;
-import static net.solarnetwork.domain.datum.Aggregation.Month;
 import static net.solarnetwork.domain.datum.Aggregation.None;
 import static net.solarnetwork.util.DateUtils.ISO_DATE_OPT_TIME_ALT_LOCAL;
 import static net.solarnetwork.util.DateUtils.ISO_DATE_TIME_ALT_UTC;
@@ -525,50 +524,38 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 				return false;
 			}
 
-			final long rangeMonths = range.monthCount();
-			final Aggregation aggregation;
-			final Aggregation partialAggregation;
-			if (rangeMonths > 1) {
-				aggregation = Month;
-				partialAggregation = Day;
-			} else {
-				aggregation = Day;
-				partialAggregation = Hour;
-			}
-
 			boolean differencesFound = false;
 
-			final TimeRangeValidationDifference diff = queryDifference(range, aggregation, partialAggregation);
+			final TimeRangeValidationDifference diff = queryDifference(range, Day);
 			if (diff.hasDifferences()) {
 				results.add(diff);
 
-				if (verbosity != null || range.hourCount() > 1) {
+				if (verbosity != null && verbosity.length > 1) {
 					// @formatter:off
-					if (verbosity != null && verbosity.length > 1) {
-						System.out.print(Ansi.AUTO.string("""
-								%s Difference discovered in range %s - %s (%s; %d days): %s %s
-								""".formatted(
-										  streamMessagePrefix
-										, LOCAL_DATE.format(range.startLocal())
-										, LOCAL_DATE.format(range.endLocal())
-										, range.zone().getId()
-										, DAYS.between(range.startLocal(), range.endLocal())
-										, aggregation
-										, diff.differences()
-									)
-								));
-					} else {
-						System.out.print(Ansi.AUTO.string("""
-								%s Difference discovered in range %s - %s (%s; %d days)
-								""".formatted(
-										  streamMessagePrefix
-										, LOCAL_DATE.format(range.startLocal())
-										, LOCAL_DATE.format(range.endLocal())
-										, range.zone().getId()
-										, DAYS.between(range.startLocal(), range.endLocal())
-									)
-								));
-					}
+					System.out.print(Ansi.AUTO.string("""
+							%s Difference discovered in range %s - %s (%s; %d days): %s
+							""".formatted(
+									  streamMessagePrefix
+									, LOCAL_DATE.format(range.startLocal())
+									, LOCAL_DATE.format(range.endLocal())
+									, range.zone().getId()
+									, DAYS.between(range.startLocal(), range.endLocal())
+									, diff.differences()
+								)
+							));
+					// @formatter:on
+				} else if (verbosity != null) {
+					// @formatter:off
+					System.out.print(Ansi.AUTO.string("""
+							%s Difference discovered in range %s - %s (%s; %d days)
+							""".formatted(
+									  streamMessagePrefix
+									, LOCAL_DATE.format(range.startLocal())
+									, LOCAL_DATE.format(range.endLocal())
+									, range.zone().getId()
+									, DAYS.between(range.startLocal(), range.endLocal())
+								)
+							));
 					// @formatter:on
 				}
 
@@ -705,14 +692,14 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			}
 			// we've got a gap between halves; look for missing Reset datum
 			// first get reading start date for range
-			Datum reading = readingDifference(gapRange);
+			final Datum reading = readingDifference(gapRange);
 
 			// now get starting datum + next for that date
 			if (reading == null) {
 				return false;
 			}
 			// make query end date +1 day because datum() truncates dates to days
-			Instant readingMaxDate = halvesGap.getEnd().plus(1, DAYS);
+			final Instant readingMaxDate = halvesGap.getEnd().plus(1, DAYS);
 			SequencedCollection<Datum> pair = datum(
 					new DatumStreamTimeRange(nodeAndSource, zone, Interval.of(reading.getTimestamp(), readingMaxDate)),
 					2).sequencedValues();
@@ -729,32 +716,43 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			// accumulating properties will resume again soon
 			Datum nextReading = next;
 
-			// verify the "next" datum is still within our overall time range and
-			// the gap between the two is >= generateAuxiliaryResetDatumGap
-			final Interval resetGap = Interval.of(start.getTimestamp(), next.getTimestamp());
-
-			if (!(range.timeRange().contains(next.getTimestamp())
-					&& resetGap.toDuration().compareTo(generateAuxiliaryResetDatumGap) >= 0)) {
-				return false;
-			}
 			if (!hasRequiredAccumulatingProperties(next)) {
 				// "next" datum missing accumulating properties, so see if we can find a
 				// following datum with accumulating props, within a short time period,
 				// inspecting smaller "chunks" of time to limit requests to reasonable
 				// amounts of data
-				Instant maxFollowingDate = next.getTimestamp().plus(14, DAYS);
-				FOLLOW: for (Instant followStart = next.getTimestamp(); followStart
-						.isBefore(maxFollowingDate); followStart = followStart.plus(1, HOURS)) {
-					SequencedCollection<Datum> following = datum(new DatumStreamTimeRange(nodeAndSource, zone,
-							Interval.of(followStart, followStart.plus(1, HOURS))), null).sequencedValues();
+				Instant maxFollowingDate = readingMaxDate.plus(14, DAYS);
+				FOLLOW: for (Instant followStart = next.getTimestamp(); followStart.isBefore(maxFollowingDate);) {
+					SequencedCollection<Datum> following = datum(
+							new DatumStreamTimeRange(nodeAndSource, zone, Interval.of(followStart, maxFollowingDate)),
+							100).sequencedValues();
+					if (following.isEmpty()) {
+						break;
+					}
 					for (Datum another : following) {
+						if (!rightRange.timeRange().contains(next.getTimestamp())
+								&& rightRange.timeRange().contains(another.getTimestamp())) {
+							// move "next" to first datum within right range; it might have been a
+							// "trailing" datum that had no accumulating properties
+							next = another;
+						}
 						if (hasRequiredAccumulatingProperties(another)) {
 							// got our target
 							nextReading = another;
 							break FOLLOW;
 						}
 					}
+					followStart = following.getLast().getTimestamp();
 				}
+			}
+
+			// verify the "next" datum is still within our overall time range and
+			// the gap between the two is >= generateAuxiliaryResetDatumGap
+			final Interval resetGap = Interval.of(start.getTimestamp(), nextReading.getTimestamp());
+
+			if (!(range.timeRange().contains(nextReading.getTimestamp())
+					&& resetGap.toDuration().compareTo(generateAuxiliaryResetDatumGap) >= 0)) {
+				return false;
 			}
 
 			// look for NO reset records (bail if any reset records found)
@@ -774,8 +772,8 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 							%s Create Reset before gap end (@|bold %s|@ -> @|bold %s|@)
 						""".formatted(
 							ISO_DATE_TIME_ALT_UTC.format(start.getTimestamp()),
-							ISO_DATE_TIME_ALT_UTC.format(next.getTimestamp()),
-							DAYS.between(start.getTimestamp(), next.getTimestamp()),
+							ISO_DATE_TIME_ALT_UTC.format(nextReading.getTimestamp()),
+							DAYS.between(start.getTimestamp(), nextReading.getTimestamp()),
 							DRY_RUN_PREFIX,
 							firstPropDiff.expectedValue(),
 							firstPropDiff.actualValue())
@@ -877,11 +875,10 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 			return restOp(() -> RestUtils.datumStreamTimeRange(restClient, nodeAndSource, minDate, maxDate));
 		}
 
-		private TimeRangeValidationDifference queryDifference(DatumStreamTimeRange range, Aggregation aggregation,
-				Aggregation partialAggregation) {
+		private TimeRangeValidationDifference queryDifference(DatumStreamTimeRange range, Aggregation aggregation) {
 			return restOp(() -> {
-				final Datum rollup = RestUtils.readingDifferenceRollup(restClient, range.nodeAndSource(), range.zone(),
-						range.start(), range.end(), properties, aggregation, partialAggregation);
+				final Datum rollup = RestUtils.readingDifferenceRollup(restClient, range.nodeAndSource(),
+						range.startLocal().toLocalDate(), range.endLocal().toLocalDate(), properties, aggregation);
 				return queryDifference(range, aggregation, rollup);
 			});
 		}
