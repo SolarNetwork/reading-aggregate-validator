@@ -149,7 +149,6 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 	@Option(names = { "-i", "--incremental-mark-stale" }, description = "incrementally mark individual stream results")
 	boolean incrementalMarkStale;
 
-	private static final Duration HALF_YEAR = Duration.ofDays(183);
 	private static final String DRY_RUN_PREFIX = "@|blue [Dry run]|@";
 
 	private final ClientHttpRequestFactory reqFactory;
@@ -623,7 +622,7 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 				state.set(Incomplete);
 				return differencesFound;
 			}
-			if (compensateForHigherAggregations && !(result1 || result2)) {
+			if (!(result1 || result2)) {
 				// the overall range was different, but both sub-ranges are not;
 				// the higher-level aggregate must be off somewhere, so we need to
 				// recompute one hour within every day in the overall range to try to fix
@@ -646,170 +645,177 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 					);
 				// @formatter:on
 
-				if (generateAuxiliaryResetDatumGap != null) {
-					// look for gap with missing Reset datum; first get reading start date for range
-					Datum reading = readingDifference(leftRange);
-
-					// now get starting datum + next for that date
-					if (reading != null) {
-						SequencedCollection<Datum> pair = datum(new DatumStreamTimeRange(nodeAndSource, zone,
-								Interval.of(reading.getTimestamp(), range.end())), 2).sequencedValues();
-
-						// find "next" datum after reading start
-						if (pair.size() == 2) {
-							Datum start = pair.getFirst();
-							Datum next = pair.getLast();
-
-							// the "next" datum may not actually have accumulating property values, so
-							// if not we will inspect some "following" datum under the assumption that
-							// accumulating properties will resume again soon
-							Datum nextReading = next;
-
-							// verify the "next" datum is still within our overall time range and
-							// the gap between the two is >= generateAuxiliaryResetDatumGap
-							final Interval resetGap = Interval.of(start.getTimestamp(), next.getTimestamp());
-
-							if (range.timeRange().contains(next.getTimestamp())
-									&& resetGap.toDuration().compareTo(generateAuxiliaryResetDatumGap) >= 0) {
-								if (!hasRequiredAccumulatingProperties(next)) {
-									// "next" datum missing accumulating properties, so see if we can find a
-									// following datum with accumulating props, within a short time period,
-									// inspecting smaller "chunks" of time to limit requests to reasonable
-									// amounts of data
-									Instant maxFollowingDate = next.getTimestamp().plus(14, DAYS);
-									FOLLOW: for (Instant followStart = next.getTimestamp(); followStart
-											.isBefore(maxFollowingDate); followStart = followStart.plus(1, HOURS)) {
-										SequencedCollection<Datum> following = datum(
-												new DatumStreamTimeRange(nodeAndSource, zone,
-														Interval.of(followStart, followStart.plus(1, HOURS))),
-												null).sequencedValues();
-										for (Datum another : following) {
-											if (hasRequiredAccumulatingProperties(another)) {
-												// got our target
-												nextReading = another;
-												break FOLLOW;
-											}
-										}
-									}
-								}
-
-								// look for NO reset records (bail if any reset records found)
-								if (hasRequiredAccumulatingProperties(nextReading) && !hasDatumAuxiliaryResetRecord(
-										new DatumStreamTimeRange(nodeAndSource, zone, resetGap))) {
-									TimeRangeValidationDifference resetDiff = differences(None, resetGap, start,
-											nextReading, properties);
-									if (resetDiff.hasDifferences()) {
-										if (dryRun) {
-											PropertyValueComparison firstPropDiff = resetDiff.differences().values()
-													.iterator().next();
-											// @formatter:off
-											compMsg.append("""
-														Datum gap: %s - %s (@|red %d|@ days)
-														%s Create Reset before gap end (@|bold %s|@ -> @|bold %s|@)
-													""".formatted(
-														ISO_DATE_TIME_ALT_UTC.format(start.getTimestamp()),
-														ISO_DATE_TIME_ALT_UTC.format(next.getTimestamp()),
-														DAYS.between(start.getTimestamp(), next.getTimestamp()),
-														DRY_RUN_PREFIX,
-														firstPropDiff.expectedValue(),
-														firstPropDiff.actualValue())
-													);
-											// @formatter:on
-											System.out.print(Ansi.AUTO.string(compMsg.toString()));
-										} else {
-											Instant resetRecordDate = saveDatumAuxiliaryResetRecord(nodeAndSource,
-													resetDiff);
-											if (resetRecordDate != null) {
-												PropertyValueComparison firstPropDiff = resetDiff.differences().values()
-														.iterator().next();
-												// @formatter:off
-												compMsg.append("""
-														Datum gap: %s - %s (@|red %d|@ days)
-														Created Reset @ %s (@|bold %s|@ -> @|bold %s|@)
-													""".formatted(
-														ISO_DATE_TIME_ALT_UTC.format(start.getTimestamp()),
-														ISO_DATE_TIME_ALT_UTC.format(next.getTimestamp()),
-														DAYS.between(start.getTimestamp(), next.getTimestamp()),
-														ISO_DATE_TIME_ALT_UTC.format(resetRecordDate),
-														firstPropDiff.expectedValue(),
-														firstPropDiff.actualValue()));
-												System.out.print(Ansi.AUTO.string(compMsg.toString()));
-												// @formatter:on
-
-											}
-										}
-
-										// treat this as difference found
-										return true;
-									}
-								}
-							}
-						}
-					}
-				}
-
-				if (verbosity != null) {
-					compMsg.append("\tInvalidating one hour/day");
-					System.out.println(Ansi.AUTO.string(compMsg.toString()));
-				}
-				for (LocalDateTime hour = range.startLocal().truncatedTo(DAYS), end = range.endLocal(); hour
-						.isBefore(end); hour = hour.plusDays(1)) {
-					final Instant hourStart = hour.atZone(zone).toInstant();
-
-					// there could be large gaps in the where we split the left/right halves,
-					// so skip hours that are not within the two half ranges we resolved
-					if (!(leftRange.timeRange().contains(hourStart) || rightRange.timeRange().contains(hourStart))) {
-						continue;
-					}
-
-					// find first available hour aggregate on given day, then re-process that (so we
-					// submit an hour with actual data)
-					final NavigableMap<Instant, Datum> hourAggsInDay = readingDifferenceAggregates(
-							new DatumStreamTimeRange(nodeAndSource, zone,
-									Interval.of(hourStart, hour.plusDays(1).atZone(zone).toInstant())));
-
-					if (hourAggsInDay.isEmpty()) {
-						continue;
-					}
-
-					final Instant firstHourInDay = hourAggsInDay.firstKey();
-
-					final Interval hourRange = Interval.of(firstHourInDay, firstHourInDay.plus(1, HOURS));
-					final Map<String, PropertyValueComparison> syntheticDifferences = new LinkedHashMap<>(
-							properties.length);
-					for (String propertyName : properties) {
-						syntheticDifferences.put(propertyName, new PropertyValueComparison(ZERO, ONE));
-					}
-					differencesFound = true;
-					if (addInvalidHourShouldStop(
-							new TimeRangeValidationDifference(Hour, hourRange, syntheticDifferences))) {
+				if (compensateForHigherAggregations && generateAuxiliaryResetDatumGap != null) {
+					if (generateResetRecord(range, leftRange, rightRange, compMsg)) {
 						return true;
 					}
+				}
+				if (compensateForHigherAggregations) {
+					compMsg.append("\tInvalidating one hour/day");
+					System.out.println(Ansi.AUTO.string(compMsg.toString()));
+					for (LocalDateTime hour = range.startLocal().truncatedTo(DAYS), end = range.endLocal(); hour
+							.isBefore(end); hour = hour.plusDays(1)) {
+						final Instant hourStart = hour.atZone(zone).toInstant();
+
+						// there could be large gaps in the where we split the left/right halves,
+						// so skip hours that are not within the two half ranges we resolved
+						if (!(leftRange.timeRange().contains(hourStart)
+								|| rightRange.timeRange().contains(hourStart))) {
+							continue;
+						}
+
+						// find first available hour aggregate on given day, then re-process that (so we
+						// submit an hour with actual data)
+						final NavigableMap<Instant, Datum> hourAggsInDay = readingDifferenceAggregates(
+								new DatumStreamTimeRange(nodeAndSource, zone,
+										Interval.of(hourStart, hour.plusDays(1).atZone(zone).toInstant())));
+
+						if (hourAggsInDay.isEmpty()) {
+							continue;
+						}
+
+						final Instant firstHourInDay = hourAggsInDay.firstKey();
+
+						final Interval hourRange = Interval.of(firstHourInDay, firstHourInDay.plus(1, HOURS));
+						final Map<String, PropertyValueComparison> syntheticDifferences = new LinkedHashMap<>(
+								properties.length);
+						for (String propertyName : properties) {
+							syntheticDifferences.put(propertyName, new PropertyValueComparison(ZERO, ONE));
+						}
+						differencesFound = true;
+						if (addInvalidHourShouldStop(
+								new TimeRangeValidationDifference(Hour, hourRange, syntheticDifferences))) {
+							return true;
+						}
+					}
+				} else {
+					System.out.print(Ansi.AUTO.string(compMsg.toString()));
 				}
 			}
 
 			return differencesFound;
 		}
 
+		private boolean generateResetRecord(DatumStreamTimeRange range, DatumStreamTimeRange leftRange,
+				DatumStreamTimeRange rightRange, StringBuilder compMsg) {
+			final Interval halvesGap = Interval.of(leftRange.end(), rightRange.start());
+			final DatumStreamTimeRange gapRange = new DatumStreamTimeRange(nodeAndSource, zone, halvesGap);
+			if (halvesGap.toDuration().compareTo(generateAuxiliaryResetDatumGap) < 0) {
+				return false;
+			}
+			// we've got a gap between halves; look for missing Reset datum
+			// first get reading start date for range
+			Datum reading = readingDifference(gapRange);
+
+			// now get starting datum + next for that date
+			if (reading == null) {
+				return false;
+			}
+			// make query end date +1 day because datum() truncates dates to days
+			Instant readingMaxDate = halvesGap.getEnd().plus(1, DAYS);
+			SequencedCollection<Datum> pair = datum(
+					new DatumStreamTimeRange(nodeAndSource, zone, Interval.of(reading.getTimestamp(), readingMaxDate)),
+					2).sequencedValues();
+
+			// find "next" datum after reading start
+			if (pair.size() != 2) {
+				return false;
+			}
+			Datum start = pair.getFirst();
+			Datum next = pair.getLast();
+
+			// the "next" datum may not actually have accumulating property values, so
+			// if not we will inspect some "following" datum under the assumption that
+			// accumulating properties will resume again soon
+			Datum nextReading = next;
+
+			// verify the "next" datum is still within our overall time range and
+			// the gap between the two is >= generateAuxiliaryResetDatumGap
+			final Interval resetGap = Interval.of(start.getTimestamp(), next.getTimestamp());
+
+			if (!(range.timeRange().contains(next.getTimestamp())
+					&& resetGap.toDuration().compareTo(generateAuxiliaryResetDatumGap) >= 0)) {
+				return false;
+			}
+			if (!hasRequiredAccumulatingProperties(next)) {
+				// "next" datum missing accumulating properties, so see if we can find a
+				// following datum with accumulating props, within a short time period,
+				// inspecting smaller "chunks" of time to limit requests to reasonable
+				// amounts of data
+				Instant maxFollowingDate = next.getTimestamp().plus(14, DAYS);
+				FOLLOW: for (Instant followStart = next.getTimestamp(); followStart
+						.isBefore(maxFollowingDate); followStart = followStart.plus(1, HOURS)) {
+					SequencedCollection<Datum> following = datum(new DatumStreamTimeRange(nodeAndSource, zone,
+							Interval.of(followStart, followStart.plus(1, HOURS))), null).sequencedValues();
+					for (Datum another : following) {
+						if (hasRequiredAccumulatingProperties(another)) {
+							// got our target
+							nextReading = another;
+							break FOLLOW;
+						}
+					}
+				}
+			}
+
+			// look for NO reset records (bail if any reset records found)
+			if (!(hasRequiredAccumulatingProperties(nextReading)
+					&& !hasDatumAuxiliaryResetRecord(new DatumStreamTimeRange(nodeAndSource, zone, resetGap)))) {
+				return false;
+			}
+			TimeRangeValidationDifference resetDiff = differences(None, resetGap, start, nextReading, properties);
+			if (!resetDiff.hasDifferences()) {
+				return false;
+			}
+			if (dryRun) {
+				PropertyValueComparison firstPropDiff = resetDiff.differences().values().iterator().next();
+				// @formatter:off
+				compMsg.append("""
+							Datum gap: %s - %s (@|red %d|@ days)
+							%s Create Reset before gap end (@|bold %s|@ -> @|bold %s|@)
+						""".formatted(
+							ISO_DATE_TIME_ALT_UTC.format(start.getTimestamp()),
+							ISO_DATE_TIME_ALT_UTC.format(next.getTimestamp()),
+							DAYS.between(start.getTimestamp(), next.getTimestamp()),
+							DRY_RUN_PREFIX,
+							firstPropDiff.expectedValue(),
+							firstPropDiff.actualValue())
+						);
+				// @formatter:on
+				System.out.print(Ansi.AUTO.string(compMsg.toString()));
+			} else {
+				Instant resetRecordDate = saveDatumAuxiliaryResetRecord(nodeAndSource, resetDiff);
+				if (resetRecordDate != null) {
+					PropertyValueComparison firstPropDiff = resetDiff.differences().values().iterator().next();
+					// @formatter:off
+					compMsg.append("""
+							Datum gap: %s - %s (@|red %d|@ days)
+							Created Reset @ %s (@|bold %s|@ -> @|bold %s|@)
+						""".formatted(
+							ISO_DATE_TIME_ALT_UTC.format(start.getTimestamp()),
+							ISO_DATE_TIME_ALT_UTC.format(next.getTimestamp()),
+							DAYS.between(start.getTimestamp(), next.getTimestamp()),
+							ISO_DATE_TIME_ALT_UTC.format(resetRecordDate),
+							firstPropDiff.expectedValue(),
+							firstPropDiff.actualValue()));
+					// @formatter:on
+					System.out.print(Ansi.AUTO.string(compMsg.toString()));
+				}
+			}
+
+			// treat this as difference found
+			return true;
+		}
+
 		private DatumStreamTimeRange startingHalfRange(DatumStreamTimeRange range, long rangeDaysHalf) {
 			DatumStreamTimeRange halfRange = range.startingDaysRange(rangeDaysHalf);
 			DatumStreamTimeRange availRange = datumStreamTimeRange(halfRange.start(), halfRange.end());
-			if (availRange != null && Duration.between(availRange.end(), halfRange.end()).compareTo(HALF_YEAR) >= 0) {
-				// the split is within a large data gap, so use the available range instead
-				return availRange;
-			}
-			return halfRange;
+			return availRange;
 		}
 
 		private DatumStreamTimeRange endingHalfRange(DatumStreamTimeRange range, long rangeDaysHalf) {
 			DatumStreamTimeRange halfRange = range.endingDaysRange(rangeDaysHalf);
 			DatumStreamTimeRange availRange = datumStreamTimeRange(halfRange.start(), halfRange.end());
-			if (availRange != null
-					&& Duration.between(halfRange.start(), availRange.start()).compareTo(HALF_YEAR) >= 0) {
-				// the split is within a large data gap, so use the available range instead
-				return availRange;
-			}
-			return halfRange;
+			return availRange;
 		}
 
 		private boolean addInvalidHourShouldStop(TimeRangeValidationDifference diff) {
