@@ -138,8 +138,10 @@ with the `--node-id=X` option.
 |:-------|:------------|
 | `-i` `--incremental-mark-stale` | Mark stale (or report) immediately after each stream's validation completes. Otherwise wait for all streams to finish processing before marking them stale. |
 | `-m` `--mark-stale` | Use the `/datum/maint/agg/stale` to mark time ranges with discovered differences as "stale". |
+| `-n` `--dry-run` | Do not actually submit any changes to SolarNetwork. |
 | `-r N` `--report-file=N` | A file name to generate a CSV report to, of all invalid time ranges discovered. |
 | `--compensate-higher-agg` | Compensate for differences found in higher aggregation levels but not corresponding lower aggregation levels, by treating a covering set of hours as invalid. |
+| `--generate-reset-datum-min-gap=N` | A minimum amount of time gap to consider creating a reset datum auxiliary record for, when `--compensate-higher-agg` is also enabled. A reasonable starting value for this is 365 days to account for SolarNetworks 1 year tolerance for reading differences. Specify as an ISO period form like `PT365D` (365 days). |
 
 ## Other options
 
@@ -157,8 +159,7 @@ with the `--node-id=X` option.
 # Logging
 
 Logging can be enabled by creating an `application.yml` file in your working directory. You can then
-configure standard [Spring Boot
-Logging][logging-conf] settings. For example
+configure standard [Spring Boot Logging][logging-conf] settings. For example
 if you would like HTTP exchange traces, add the `--http-trace` option and then configure logging
 something like this:
 
