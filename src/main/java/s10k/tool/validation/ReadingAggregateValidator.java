@@ -877,8 +877,8 @@ public class ReadingAggregateValidator implements Callable<Integer> {
 
 		private TimeRangeValidationDifference queryDifference(DatumStreamTimeRange range, Aggregation aggregation) {
 			return restOp(() -> {
-				final Datum rollup = RestUtils.readingDifferenceRollup(restClient, range.nodeAndSource(),
-						range.startLocal().toLocalDate(), range.endLocal().toLocalDate(), properties, aggregation);
+				final Datum rollup = RestUtils.readingDifferenceRollup(restClient, range.nodeAndSource(), range.start(),
+						range.end(), properties, aggregation);
 				return queryDifference(range, aggregation, rollup);
 			});
 		}

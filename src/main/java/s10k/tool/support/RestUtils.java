@@ -10,7 +10,6 @@ import static net.solarnetwork.util.DateUtils.ISO_DATE_TIME_ALT_UTC;
 import java.math.BigDecimal;
 import java.net.URI;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -330,8 +329,8 @@ public final class RestUtils {
 	 * @return the range, or {@code null} if not available
 	 * @throws RestClientException if the request fails
 	 */
-	public static Datum readingDifferenceRollup(RestClient restClient, NodeAndSource nodeAndSource, LocalDate startDate,
-			LocalDate endDate, String[] accumulatingProperties, Aggregation aggregation) {
+	public static Datum readingDifferenceRollup(RestClient restClient, NodeAndSource nodeAndSource, Instant startDate,
+			Instant endDate, String[] accumulatingProperties, Aggregation aggregation) {
 		// @formatter:off
 		ObjectDatumStreamDataSet<AggregateStreamDatum> results = restClient.get()
 			.uri(b -> {
@@ -339,8 +338,8 @@ public final class RestUtils {
 					.queryParam("readingType", "Difference")
 					.queryParam("nodeId", nodeAndSource.nodeId())
 					.queryParam("sourceId", nodeAndSource.sourceId())
-					.queryParam("localStartDate", startDate)
-					.queryParam("localEndDate", endDate)
+					.queryParam("startDate", startDate.atOffset(UTC).toLocalDateTime())
+					.queryParam("endDate", endDate.atOffset(UTC).toLocalDateTime())
 					.queryParam("aggregation", aggregation)
 					.queryParam("rollupType", "All")
 					.build();
