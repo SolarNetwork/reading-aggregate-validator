@@ -20,7 +20,7 @@ apply plugin: 'net.ltgt.errorprone'
 apply plugin: 'org.graalvm.buildtools.native'
 
 description = 'SolarNetwork Reading Aggregate Validator'
-version = '1.2.0'
+version = '1.3.0'
 group = 's10k.tool'
 
 base {
