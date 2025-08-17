@@ -108,6 +108,46 @@ specified, the tool will generate one invalid hour for each of January, February
 has the effect of getting those month aggregations reprocessed, hopefully resolving the difference.
 
 
+## Generating reset records
+
+If `--compensate-higher-agg` is enabled, then you can also use the
+`--generate-reset-datum-min-gap=N` option to automatically generate `Reset` [datum auxiliary
+records][add-datum-aux] when a time gap of at least `N` is discovered. A `Reset` record helps cope
+with jumps in an accumulating property value, such as after a device outage or replacement. Since
+SolarNetwork has a **1 year** reading difference maximum tolerance, using `P365D` is a sensible
+value to start with. For example, imagine a datum stream like the following:
+
+| Timestamp | wattHours |
+|:----------|:------------|
+| 2020-01-01 14:00 | 1000 |
+| 2020-01-01 14:10 | 1100 |
+| 2022-12-30 09:30 | 9800 |
+| 2022-12-30 09:40 | 9900 |
+
+Notice the large time gap from 2020 to 2022, along with an energy reading jump from 1100 to 9800.
+With the `--generate-reset-datum-min-gap=P365D` option specified a `Reset` datum record like this
+will be created:
+
+```json
+{
+  "created": "2022-12-30 09:29",
+  "nodeId": "123",
+  "sourceId": "/the/source/id",
+  "type": "Reset",
+  "final": {
+    "a": {
+      "wattHours": 1100
+    }
+  },
+  "start": {
+    "a": {
+      "wattHours": 9800
+    }
+  },
+  "notes": "Created by sn-reading-aggregate-validator"
+}
+```
+
 # Options
 
 Run the tool with `-h` or `--help` to display all the available options.
@@ -209,5 +249,6 @@ Then you can run:
 
 The native binary will be built to `build/native/nativeCompile/sn-reading-aggregate-validator`.
 
+[add-datum-aux]: https://github.com/SolarNetwork/solarnetwork/wiki/SolarUser-API#datum-auxiliary-store
 [graalvm]: https://www.graalvm.org/
 [logging-conf]: https://docs.spring.io/spring-boot/reference/features/logging.html
