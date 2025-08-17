@@ -58,7 +58,7 @@ sn-reading-aggregate-validator \
   --secret \
   --property=wattHours \
   --max-invalid=500 \
-  --max-wait PT2H \
+  --max-wait=PT2H \
   --threads=4 \
   --source-id='/**/GEN/*' \
   --report-file=sn-invalid-agg-report.csv \
